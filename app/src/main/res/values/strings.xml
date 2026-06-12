@@ -1,0 +1,42 @@
+<resources>
+    <string name="app_name">MyMessenger</string>
+    <string name="login">Вход</string>
+    <string name="authorization">Регистрация</string>
+    <string name="unicum_nickname">Уникальный никнейм</string>
+    <string name="generate_another_name">Сгенерировать другое имя</string>
+    <string name="invalid_email_format">Неверный формат Email (пример: name@domain.com)</string>
+    <string name="password_is_too_short">Пароль слишком короткий. Нужно еще минимум %1$d симв.</string>
+    <string name="password">Пароль</string>
+    <string name="error_email_collision">Этот Email уже зарегистрирован в системе.</string>
+    <string name="error_unknown_registration">Произошла ошибка при регистрации. Попробуйте снова.</string>
+    <string name="error_sending_email">Ошибка отправки письма</string>
+    <string name="session_authorization_error">Ошибка авторизации сессии. Попробуйте войти через экран входа</string>
+    <string name="email">Email</string>
+    <string name="minimum_characters">Минимум %1$d символов и %2$d буква</string>
+    <string name="repeat_password">Повторите пароль</string>
+    <string name="passwords_do_not_match">Пароли не совпадают</string>
+    <string name="register">Зарегистрироваться</string>
+    <string name="enter_valid_email_to_reset_your_password">Введите корректный Email для сброса пароля</string>
+    <string name="error_invalid_credentials">Неверный email или пароль. Попробуйте снова</string>
+    <string name="error_user_not_found">Пользователь с таким Email не найден</string>
+    <string name="error_user_disabled">Этот аккаунт заблокирован администратором.</string>
+    <string name="error_too_many_requests">Слишком много неудачных попыток. Доступ временно заблокирован.</string>
+    <string name="error_auth_unknown">Ошибка авторизации. Проверьте правильность ввода.</string>
+    <string name="error_email_not_verified">Ваш Email не подтвержден. Пожалуйста, перейдите по ссылке в письме, отправленном на вашу почту.</string>
+    <string name="error_network_failed">Произошла ошибка сети. Проверьте подключение к интернету.</string>
+    <string name="email_label">Email</string>
+    <string name="email_placeholder">example@email.com</string>
+    <string name="invalid_email_message">Неверный формат Email (пример: name@domain.com)</string>
+    <string name="password_label">Пароль</string>
+    <string name="password_hint_or_error">Пароль слишком короткий. Нужно еще минимум %1$d симв.</string>
+    <string name="forgot_password_button">Забыли пароль?</string>
+    <string name="login_button">Войти</string>
+    <string name="no_account_link">Еще нет аккаунта? Зарегистрироваться</string>
+    <string name="registration_success_verify_email">Аккаунт успешно создан! Пожалуйста, проверьте ваш почтовый ящик (включая папку «Спам») и перейдите по ссылке для подтверждения профиля.</string>
+    <string name="reset_password_instruction">Инструкция отправлена! Если письма нет, обязательно проверьте папку «Спам» (если Email есть в системе)</string>
+    <string name="password_must_contain_at_least_letter">Пароль должен содержать минимум %1$d букву</string>
+    <string name="password_is_valid">Пароль полностью соответствует требованиям</string>
+    <string name="passwords_match_success">Пароли успешно совпадают</string>
+    <string name="email_is_valid">Email корректен и готов к проверке</string>
+
+</resources>
