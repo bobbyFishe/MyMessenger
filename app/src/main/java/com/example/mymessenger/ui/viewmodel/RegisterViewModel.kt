@@ -41,7 +41,6 @@ class RegisterViewModel(
     val resultState: StateFlow<RegisterResultState>  = _resultState.asStateFlow()
     private val emailRegex = Constants.EMAIL_REGEX.toRegex()
 
-
     val isInputValid: Boolean
         get() {
             val state = _uiState.value
@@ -56,11 +55,17 @@ class RegisterViewModel(
             return pass.isNotEmpty() && pass.length < Constants.MIN_PASSWORD_LENGTH
         }
 
-    val isPasswordMissingLetter: Boolean
+    val missingPasswordRequirements: List<String>
+        get() = Constants.getMissingPasswordRequirements(_uiState.value.password)
+
+
+    val doPasswordsMatch: Boolean
+        get() = _uiState.value.password == _uiState.value.passwordRepeat
+
+    val isEmailInvalid: Boolean
         get() {
-            val pass = _uiState.value.password
-            val hasLetter = pass.contains(Constants.LETTER.toRegex())
-            return pass.isNotEmpty() && !hasLetter
+            val email = _uiState.value.email
+            return email.isNotEmpty() && !emailValidate(email)
         }
 
     init {
@@ -74,9 +79,9 @@ class RegisterViewModel(
             var finalName = ""
 
             while (isTaken) {
-                val randomAdjective = Constants.ADJECTIVES.random()
-                val randomNoun = Constants.NOUNS.random()
-                finalName = "$randomAdjective $randomNoun"
+                val randomFirstName = Constants.FIRST_NAMES.random()
+                val randomSurname = Constants.SURNAMES.random()
+                finalName = "${randomFirstName}_${randomSurname}"
 
                 val checkResult = checkNameUseCase(finalName)
                 isTaken = checkResult.getOrDefault(true)
@@ -86,16 +91,6 @@ class RegisterViewModel(
             _isNameChecking.value = false
         }
     }
-
-    val doPasswordsMatch: Boolean
-        get() = _uiState.value.password == _uiState.value.passwordRepeat
-
-
-    val isEmailInvalid: Boolean
-        get() {
-            val email = _uiState.value.email
-            return email.isNotEmpty() && !emailValidate(email)
-        }
 
     fun updateEmail(newEmail: String) {
         _uiState.update { it.copy(email = newEmail) }
@@ -110,8 +105,9 @@ class RegisterViewModel(
     }
 
     fun passwordValidate(pass: String, passRepeat: String): Boolean {
-        val hasLetter = pass.contains("\\p{L}".toRegex())
-        return pass.length >= Constants.MIN_PASSWORD_LENGTH && hasLetter && pass == passRepeat
+        val isValidFormat = pass.length >= Constants.MIN_PASSWORD_LENGTH &&
+                Constants.getMissingPasswordRequirements(pass).isEmpty()
+        return isValidFormat && pass == passRepeat
     }
 
     fun updatePasswordRepeat(newPasswordRepeat: String) {

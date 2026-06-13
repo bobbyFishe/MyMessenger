@@ -12,7 +12,7 @@
     <string name="error_sending_email">Ошибка отправки письма</string>
     <string name="session_authorization_error">Ошибка авторизации сессии. Попробуйте войти через экран входа</string>
     <string name="email">Email</string>
-    <string name="minimum_characters">Минимум %1$d символов и %2$d буква</string>
+    <string name="minimum_characters">Минимум %1$d: заглавная, строчная буква и цифра</string>
     <string name="repeat_password">Повторите пароль</string>
     <string name="passwords_do_not_match">Пароли не совпадают</string>
     <string name="register">Зарегистрироваться</string>
@@ -34,9 +34,18 @@
     <string name="no_account_link">Еще нет аккаунта? Зарегистрироваться</string>
     <string name="registration_success_verify_email">Аккаунт успешно создан! Пожалуйста, проверьте ваш почтовый ящик (включая папку «Спам») и перейдите по ссылке для подтверждения профиля.</string>
     <string name="reset_password_instruction">Инструкция отправлена! Если письма нет, обязательно проверьте папку «Спам» (если Email есть в системе)</string>
-    <string name="password_must_contain_at_least_letter">Пароль должен содержать минимум %1$d букву</string>
+    <string name="password_must_contain_at_least_letter">Пароль должен содержать заглавную, строчную букву и цифру</string>
     <string name="password_is_valid">Пароль полностью соответствует требованиям</string>
     <string name="passwords_match_success">Пароли успешно совпадают</string>
     <string name="email_is_valid">Email корректен и готов к проверке</string>
-
+    <string name="user_was_not_found_in_the_firestore">Пользователь не найден в базе данных Firestore</string>
+    <string name="logout_menu_item">Выйти из профиля</string>
+    <string name="menu_content_description">Меню настроек</string>
+    <string name="loading_user_placeholder">Загрузка…</string>
+    <string name="error">Ошибка</string>
+    <string name="password_requirements_error">Пароль должен содержать как минимум одну заглавную букву, одну строчную букву и одну цифру.</string>
+    <string name="req_lowercase">маленькая буква</string>
+    <string name="req_uppercase">большая буква</string>
+    <string name="req_digit">цифра</string>
+    <string name="password_missing_prefix">Вам необходима: %1$s</string>
 </resources>

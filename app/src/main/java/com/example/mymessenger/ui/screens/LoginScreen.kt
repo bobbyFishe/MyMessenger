@@ -2,16 +2,21 @@ package com.example.mymessenger.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -27,6 +32,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
@@ -93,7 +99,8 @@ fun LoginScreen(
         onPasswordChange = { viewModel.updatePassword(it) },
         onLoginClick = { viewModel.login() },
         onResetPasswordClick = { viewModel.resetPassword() },
-        onRegisterClick = onRegisterClick
+        onRegisterClick = onRegisterClick,
+        missingRequirements = viewModel.missingPasswordRequirements,
     )
 }
 
@@ -109,10 +116,12 @@ fun LoginScreenContent(
     onPasswordChange: (String) -> Unit,
     onLoginClick: () -> Unit,
     onResetPasswordClick: () -> Unit,
-    onRegisterClick: () -> Unit
+    onRegisterClick: () -> Unit,
+    missingRequirements: List<String>
 ) {
     val focusManager = LocalFocusManager.current
     val scrollState = rememberScrollState()
+    val context = LocalContext.current
 
     Scaffold(
         topBar = { TopBarScreen(R.string.login) },
@@ -153,23 +162,55 @@ fun LoginScreenContent(
                 ),
                 modifier = Modifier.fillMaxWidth()
             )
-
             OutlinedTextField(
                 value = uiState.password,
                 onValueChange = onPasswordChange,
                 label = { Text(stringResource(R.string.password_label), style = MaterialTheme.typography.bodySmall) },
                 singleLine = true,
-                isError = isPasswordTooShort,
+                isError = isPasswordTooShort || missingRequirements.isNotEmpty(),
                 supportingText = {
-                    if (isPasswordTooShort) {
-                        val symbolsLeft = Constants.MIN_PASSWORD_LENGTH - uiState.password.length
-                        Text(
-                            text = stringResource(R.string.password_hint_or_error, symbolsLeft),
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    } else {
-                        Text(stringResource(R.string.minimum_characters, Constants.MIN_PASSWORD_LENGTH,
-                            Constants.MIN_PASSWORD_WORD))
+                    when {
+                        isPasswordTooShort -> {
+                            val symbolsLeft = Constants.MIN_PASSWORD_LENGTH - uiState.password.length
+                            Text(
+                                text = stringResource(R.string.password_hint_or_error, symbolsLeft),
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        missingRequirements.isNotEmpty() -> {
+                            val missingWords = missingRequirements.map { req ->
+                                when (req) {
+                                    "LOWERCASE" -> context.resources.getString(R.string.req_lowercase)
+                                    "UPPERCASE" -> context.resources.getString(R.string.req_uppercase)
+                                    else -> context.resources.getString(R.string.req_digit)
+                                }
+                            }
+                            val combinedRequirements = missingWords.joinToString(", ")
+                            Text(
+                                text = stringResource(R.string.password_missing_prefix, combinedRequirements),
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        uiState.password.isNotEmpty() -> {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = Color(0xFF2E7D32),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = stringResource(R.string.password_is_valid),
+                                    color = Color(0xFF2E7D32)
+                                )
+                            }
+                        }
+                        else -> {
+                            Text(stringResource(R.string.minimum_characters, Constants.MIN_PASSWORD_LENGTH))
+                        }
                     }
                 },
                 visualTransformation = PasswordVisualTransformation(),
@@ -230,6 +271,7 @@ fun LoginScreenPreview() {
         onResetPasswordClick = {},
         onRegisterClick = {},
         isEmailInvalid = true,
-        isPasswordTooShort = false
+        isPasswordTooShort = false,
+        missingRequirements = listOf(),
     )
 }

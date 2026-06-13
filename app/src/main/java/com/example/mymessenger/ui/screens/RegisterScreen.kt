@@ -40,18 +40,14 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.mymessenger.R
 import com.example.mymessenger.data.utils.Constants
 import com.example.mymessenger.ui.theme.spacings
 import com.example.mymessenger.ui.viewmodel.RegisterResultState
 import com.example.mymessenger.ui.viewmodel.RegisterUiState
 import com.example.mymessenger.ui.viewmodel.RegisterViewModel
-import com.google.protobuf.Internal
-import org.koin.androidx.compose.koinViewModel
 
 @Composable
 fun RegisterScreen(
@@ -72,13 +68,13 @@ fun RegisterScreen(
         resultState = resultState.value,
         isInputValid = viewModel.isInputValid,
         isNameChecking = viewModel.isNameChecking.collectAsState().value,
-        generateRandomName = {viewModel.generateRandomName() },
+        generateRandomName = { viewModel.generateRandomName() },
         onEmailChange = { viewModel.updateEmail(it) },
         onPasswordChange = { viewModel.updatePassword(it) },
         onPasswordRepeatChange = { viewModel.updatePasswordRepeat(it) },
         isEmailInvalid = viewModel.isEmailInvalid,
         isPasswordTooShort = viewModel.isPasswordTooShort,
-        isPasswordMissingLetter = viewModel.isPasswordMissingLetter,
+        missingRequirements = viewModel.missingPasswordRequirements,
         doPasswordsMatch = viewModel.doPasswordsMatch,
         onRegisterClick = { viewModel.register() }
     )
@@ -97,7 +93,7 @@ fun RegisterScreenContent(
     onPasswordRepeatChange: (String) -> Unit,
     isEmailInvalid: Boolean,
     isPasswordTooShort: Boolean,
-    isPasswordMissingLetter: Boolean,
+    missingRequirements: List<String>,
     doPasswordsMatch: Boolean,
     onRegisterClick: () -> Unit
 ) {
@@ -128,14 +124,22 @@ fun RegisterScreenContent(
                 .padding(MaterialTheme.spacings.large)
                 .verticalScroll(scrollState)
                 .imePadding(),
-            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacings.small, Alignment.CenterVertically),
+            verticalArrangement = Arrangement.spacedBy(
+                MaterialTheme.spacings.small,
+                Alignment.CenterVertically
+            ),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             OutlinedTextField(
                 value = uiState.name,
                 onValueChange = {},
                 readOnly = true,
-                label = { Text(stringResource(R.string.unicum_nickname), style = MaterialTheme.typography.bodySmall) },
+                label = {
+                    Text(
+                        stringResource(R.string.unicum_nickname),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                },
                 textStyle = MaterialTheme.typography.bodyLarge.copy(
                     fontSize = 18.sp
                 ),
@@ -146,8 +150,11 @@ fun RegisterScreenContent(
                             strokeWidth = 2.dp
                         )
                     } else {
-                        IconButton(onClick =  generateRandomName) {
-                            Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.generate_another_name))
+                        IconButton(onClick = generateRandomName) {
+                            Icon(
+                                Icons.Default.Refresh,
+                                contentDescription = stringResource(R.string.generate_another_name)
+                            )
                         }
                     }
                 },
@@ -156,7 +163,12 @@ fun RegisterScreenContent(
             OutlinedTextField(
                 value = uiState.email,
                 onValueChange = onEmailChange,
-                label = { Text(stringResource(R.string.email), style = MaterialTheme.typography.bodySmall) },
+                label = {
+                    Text(
+                        stringResource(R.string.email),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                },
                 singleLine = true,
                 isError = isEmailInvalid,
                 supportingText = {
@@ -167,6 +179,7 @@ fun RegisterScreenContent(
                                 color = MaterialTheme.colorScheme.error
                             )
                         }
+
                         uiState.email.isNotEmpty() && !isEmailInvalid -> {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -184,6 +197,7 @@ fun RegisterScreenContent(
                                 )
                             }
                         }
+
                         else -> null
                     }
                 },
@@ -204,31 +218,47 @@ fun RegisterScreenContent(
                 onValueChange = onPasswordChange,
                 label = { Text(stringResource(R.string.password)) },
                 singleLine = true,
-                isError = isPasswordTooShort || isPasswordMissingLetter,
+                isError = isPasswordTooShort || missingRequirements.isNotEmpty(),
                 visualTransformation = PasswordVisualTransformation(),
                 supportingText = {
                     when {
                         isPasswordTooShort -> {
-                            val symbolsLeft = Constants.MIN_PASSWORD_LENGTH - uiState.password.length
+                            val symbolsLeft =
+                                Constants.MIN_PASSWORD_LENGTH - uiState.password.length
                             Text(
                                 text = stringResource(R.string.password_is_too_short, symbolsLeft),
                                 color = MaterialTheme.colorScheme.error
                             )
                         }
-                        isPasswordMissingLetter -> {
+
+                        missingRequirements.isNotEmpty() -> {
+                            val missingWords = missingRequirements.map { req ->
+                                when (req) {
+                                    "LOWERCASE" -> context.resources.getString(R.string.req_lowercase)
+                                    "UPPERCASE" -> context.resources.getString(R.string.req_uppercase)
+                                    else -> context.resources.getString(R.string.req_digit)
+                                }
+                            }
+
+                            // Красиво соединяем слова через запятую (например: "большая буква, цифра")
+                            val combinedRequirements = missingWords.joinToString(", ")
+
                             Text(
-                                text = stringResource(R.string.password_must_contain_at_least_letter,
-                                    Constants.MIN_PASSWORD_WORD),
+                                text = stringResource(
+                                    R.string.password_missing_prefix,
+                                    combinedRequirements
+                                ),
                                 color = MaterialTheme.colorScheme.error
                             )
                         }
+
                         uiState.password.isNotEmpty() -> {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.CheckCircle,
+                                    Icons.Default.CheckCircle,
                                     contentDescription = null,
                                     tint = Color(0xFF2E7D32),
                                     modifier = Modifier.size(16.dp)
@@ -239,9 +269,9 @@ fun RegisterScreenContent(
                                 )
                             }
                         }
+
                         else -> {
-                            Text(stringResource(R.string.minimum_characters, Constants.MIN_PASSWORD_LENGTH,
-                                Constants.MIN_PASSWORD_WORD))
+                            Text(stringResource(R.string.minimum_characters, Constants.MIN_PASSWORD_LENGTH))
                         }
                     }
                 },
@@ -272,6 +302,7 @@ fun RegisterScreenContent(
                                 color = MaterialTheme.colorScheme.error
                             )
                         }
+
                         uiState.passwordRepeat.isNotEmpty() && doPasswordsMatch -> {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -289,6 +320,7 @@ fun RegisterScreenContent(
                                 )
                             }
                         }
+
                         else -> null
                     }
                 },
@@ -310,7 +342,9 @@ fun RegisterScreenContent(
             Button(
                 onClick = onRegisterClick,
                 enabled = isInputValid && resultState !is RegisterResultState.Loading,
-                modifier = Modifier.fillMaxWidth().padding(top = MaterialTheme.spacings.medium)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = MaterialTheme.spacings.medium)
             ) {
                 if (resultState is RegisterResultState.Loading) {
                     CircularProgressIndicator(color = MaterialTheme.colorScheme.onPrimary)
@@ -338,6 +372,6 @@ fun RegisterScreenPreview() {
         isEmailInvalid = true,
         onRegisterClick = {},
         generateRandomName = {},
-        isPasswordMissingLetter = true
+        missingRequirements = listOf()
     )
 }

@@ -39,6 +39,10 @@ class LoginViewModel(
     private val _resultState = MutableStateFlow<LoginResultState>(LoginResultState.Idle)
     val resultState: StateFlow<LoginResultState> = _resultState.asStateFlow()
 
+    val missingPasswordRequirements: List<String>
+        get() = Constants.getMissingPasswordRequirements(_uiState.value.password)
+
+
     val isPasswordTooShort: Boolean
         get() {
             val pass = _uiState.value.password
@@ -58,7 +62,10 @@ class LoginViewModel(
     val isLoginInputValid: Boolean
         get() {
             val state = _uiState.value
-            return state.email.isNotBlank() && Constants.EMAIL_REGEX.toRegex().matches(state.email.trim()) && state.password.isNotEmpty()
+            val isPasswordValid = state.password.length >= Constants.MIN_PASSWORD_LENGTH &&
+                    Constants.getMissingPasswordRequirements(state.password).isEmpty()
+
+            return emailValidate(state.email) && isPasswordValid
         }
 
     fun updateEmail(newEmail: String) {

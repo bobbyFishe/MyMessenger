@@ -8,16 +8,21 @@ import androidx.navigation.compose.navigation
 import androidx.navigation.compose.rememberNavController
 import com.example.mymessenger.ui.screens.RegisterScreen
 import com.example.mymessenger.ui.screens.LoginScreen
+import com.example.mymessenger.ui.screens.MainScreen
 import com.example.mymessenger.ui.viewmodel.LoginViewModel
 import com.example.mymessenger.ui.viewmodel.RegisterViewModel
+import com.google.firebase.auth.FirebaseAuth
 import org.koin.androidx.compose.koinViewModel
 
 @Composable
 fun MyMessageApp() {
     val navController = rememberNavController()
+    val firebaseAuth = FirebaseAuth.getInstance()
+    val isUserLoggedIn = firebaseAuth.currentUser != null && firebaseAuth.currentUser?.isEmailVerified == true
+    val startGraph = if (isUserLoggedIn) "main_graph" else "auth_graph"
     NavHost(
         navController = navController,
-        startDestination = "auth_graph"
+        startDestination = startGraph
     ) {
         navigation(
             startDestination = "login?fromRegister={fromRegister}",
@@ -50,7 +55,15 @@ fun MyMessageApp() {
             startDestination = "chats_list",
             route = "main_graph"
         ) {
-            composable("chats_list") { Text(text = "chats_list") }
+            composable("chats_list") {
+                MainScreen(
+                    onLogoutSuccess = {
+                        navController.navigate("auth_graph") {
+                            popUpTo("main_graph") { inclusive = true }
+                        }
+                    }
+                )
+            }
             composable("chat_detail/{chatId}") { /* ... */ }
         }
     }

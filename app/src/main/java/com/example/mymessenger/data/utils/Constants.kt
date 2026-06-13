@@ -2,12 +2,23 @@ package com.example.mymessenger.data.utils
 
 object Constants {
     const val FIRESTORE_USERS_COLLECTION = "users"
-    const val MIN_PASSWORD_LENGTH = 6
+    const val MIN_PASSWORD_LENGTH = 8
     const val MIN_PASSWORD_WORD = 1
+
+    fun getMissingPasswordRequirements(password: String): List<String> {
+        val missing = mutableListOf<String>()
+        if (password.isEmpty()) return missing
+
+        if (!password.contains("\\p{Ll}".toRegex())) missing.add("LOWERCASE")
+        if (!password.contains("\\p{Lu}".toRegex())) missing.add("UPPERCASE")
+        if (!password.contains("\\d".toRegex())) missing.add("DIGIT")
+
+        return missing
+    }
     const val EMAIL_REGEX =
         "^[A-Za-z0-9._%+-]+@(gmail\\.com|mail\\.ru|yandex\\.ru|yahoo\\.com|outlook\\.com|icloud\\.com|proton\\.me|protonmail\\.com|rambler\\.ru|bk\\.ru|inbox\\.ru|list\\.ru|internet\\.ru)$"
-    const val LETTER = "\\p{L}"
-    val ADJECTIVES = listOf(
+
+    val FIRST_NAMES = listOf(
         "Aaron",
         "Abby",
         "Abdul",
@@ -1551,7 +1562,7 @@ object Constants {
         "Ezzard"
     )
 
-    val NOUNS = listOf(
+    val SURNAMES = listOf(
         // A
         "Abbott",
         "Abernathy",
