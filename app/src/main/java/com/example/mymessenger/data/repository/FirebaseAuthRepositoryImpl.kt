@@ -20,6 +20,7 @@ class FirebaseAuthRepositoryImpl : AuthRepository {
                     val userMap = mapOf(
                         "uid" to userId,
                         "name" to name,
+                        "nameLowercase" to name.lowercase(),
                         "email" to email,
                         "createdAt" to System.currentTimeMillis()
                     )

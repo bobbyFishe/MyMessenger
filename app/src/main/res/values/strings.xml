@@ -48,4 +48,17 @@
     <string name="req_uppercase">большая буква</string>
     <string name="req_digit">цифра</string>
     <string name="password_missing_prefix">Вам необходима: %1$s</string>
+    <string name="add_chat_content_desc">Добавить новый чат</string>
+    <string name="search_contact_title">Найти собеседника</string>
+    <string name="search_contact_placeholder">Введите Имя_Фамилия</string>
+    <string name="search_button">Найти</string>
+    <string name="cancel_button">Отмена</string>
+    <string name="contact_not_found">Пользователь с таким никнеймом не найден</string>
+    <string name="saved_messages">Избранное</string>
+    <string name="saved_messages_subtitle">Чат с самим собой для заметок</string>
+    <string name="cannot_search_self">Вы не можете добавить в контакты самого себя</string>
+    <string name="message_placeholder">Сообщение</string>
+    <string name="send_content_desc">Отправить сообщение</string>
+
+
 </resources>

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.mymessenger.R
 import com.example.mymessenger.data.utils.Constants
+import com.example.mymessenger.domain.repository.UserRepository
 import com.example.mymessenger.domain.usecases.CheckNameUseCase
 import com.example.mymessenger.domain.usecases.RegisterWithEmailUseCase
 import com.google.firebase.auth.FirebaseAuth
@@ -29,7 +30,8 @@ data class RegisterUiState(
 )
 class RegisterViewModel(
     private val registerWithEmailUseCase: RegisterWithEmailUseCase,
-    private val checkNameUseCase: CheckNameUseCase
+    private val checkNameUseCase: CheckNameUseCase,
+    private val userRepository: UserRepository
 ): ViewModel() {
     private val _uiState = MutableStateFlow(RegisterUiState())
     val uiState: StateFlow<RegisterUiState> = _uiState.asStateFlow()
@@ -77,14 +79,24 @@ class RegisterViewModel(
             _isNameChecking.value = true
             var isTaken = true
             var finalName = ""
+            var attempts = 0
 
-            while (isTaken) {
+            while (isTaken && attempts < Constants.GENERATE_NAME_COUNT) {
+                attempts++
                 val randomFirstName = Constants.FIRST_NAMES.random()
                 val randomSurname = Constants.SURNAMES.random()
                 finalName = "${randomFirstName}_${randomSurname}"
 
                 val checkResult = checkNameUseCase(finalName)
-                isTaken = checkResult.getOrDefault(true)
+
+                if (checkResult.isFailure) {
+                    isTaken = false
+                } else {
+                    isTaken = checkResult.getOrDefault(false)
+                }
+            }
+            if (finalName.isEmpty()) {
+                finalName = "User_${System.currentTimeMillis().toString().takeLast(5)}"
             }
 
             updateName(finalName)
@@ -125,9 +137,10 @@ class RegisterViewModel(
             val state = _uiState.value
             val result = registerWithEmailUseCase(state.name, state.email, state.password)
             result.fold(
-                onSuccess = { _ ->
+                onSuccess = { userId ->
                     val currentUser = FirebaseAuth.getInstance().currentUser
                     if (currentUser != null) {
+                        userRepository.createEncryptedChat(peerId = userId, peerPublicKey = null)
                         currentUser.sendEmailVerification()
                             .addOnCompleteListener { task ->
                                 if (task.isSuccessful) {

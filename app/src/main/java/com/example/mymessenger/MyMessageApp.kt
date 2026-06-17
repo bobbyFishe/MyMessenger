@@ -1,11 +1,11 @@
 package com.example.mymessenger
 
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.navigation
 import androidx.navigation.compose.rememberNavController
+import com.example.mymessenger.ui.screens.ChatDetailScreen
 import com.example.mymessenger.ui.screens.RegisterScreen
 import com.example.mymessenger.ui.screens.LoginScreen
 import com.example.mymessenger.ui.screens.MainScreen
@@ -61,10 +61,21 @@ fun MyMessageApp() {
                         navController.navigate("auth_graph") {
                             popUpTo("main_graph") { inclusive = true }
                         }
+                    },
+                    onChatClick = { chatId->
+                        navController.navigate("chat_detail/$chatId")
                     }
                 )
             }
-            composable("chat_detail/{chatId}") { /* ... */ }
+            composable("chat_detail/{chatId}") { backStackEntry ->
+                val chatId = backStackEntry.arguments?.getString("chatId") ?: ""
+                ChatDetailScreen(
+                    chatId = chatId,
+                    onBackClick = {
+                        navController.popBackStack()
+                    }
+                )
+            }
         }
     }
 }
