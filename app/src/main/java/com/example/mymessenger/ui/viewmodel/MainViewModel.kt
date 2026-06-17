@@ -60,23 +60,35 @@ class MainViewModel(
                     viewModelScope.launch {
                         userRepository.observeUserChats(userData.uid)
                             .catch { exception ->
-                                android.util.Log.e("FIRESTORE_ERROR", "Ошибка подписки на чаты: ${exception.message}")
+                                android.util.Log.e("MainViewModel", "❌ Error observing chats", exception)
                                 _uiState.value = MainUiState.Error(R.string.error_network_failed)
                             }
                             .collect { chatsList ->
+                                android.util.Log.d("MainViewModel", "📋 Chats updated: ${chatsList.size}")
 
-                            chatsList.forEach { chatDoc ->
-                                userRepository.completeCryptoHandshake(chatDoc)
-                            }
+                                chatsList.forEach { chatDoc ->
+                                    viewModelScope.launch {
+                                        android.util.Log.d("MainViewModel", "🚀 Starting P2P engine for: ${chatDoc.id}")
+                                        chatRepository.startP2PDeliveryEngine(chatDoc.id)
+                                            .catch { e ->
+                                                android.util.Log.e("MainViewModel", "❌ Engine error for ${chatDoc.id}", e)
+                                            }
+                                            .collect {
+                                                android.util.Log.d("MainViewModel", "✅ Engine emitted for ${chatDoc.id}")
+                                            }
+                                    }
 
-                            _uiState.update { currentState ->
-                                if (currentState is MainUiState.Success) {
-                                    currentState.copy(chats = chatsList)
-                                } else {
-                                    currentState
+                                    userRepository.completeCryptoHandshake(chatDoc)
+                                }
+
+                                _uiState.update { currentState ->
+                                    if (currentState is MainUiState.Success) {
+                                        currentState.copy(chats = chatsList)
+                                    } else {
+                                        currentState
+                                    }
                                 }
                             }
-                        }
                     }
                 },
                 onFailure = {

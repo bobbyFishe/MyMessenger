@@ -40,12 +40,6 @@ class ChatDetailViewModel(
         currentChatId = chatId
 
         viewModelScope.launch {
-            chatRepository.startP2PDeliveryEngine(chatId)
-                .catch { }
-                .collect {}
-        }
-
-        viewModelScope.launch {
             chatRepository.getLocalMessages(chatId)
                 .catch { _uiState.value = ChatDetailUiState.Error(R.string.error_network_failed) }
                 .collect { localMessages ->
