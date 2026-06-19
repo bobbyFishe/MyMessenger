@@ -22,14 +22,20 @@ class ChatRepositoryImpl(
     private val messageDao: MessageDao,
     private val chatKeyDao: ChatKeyDao
 ) : ChatRepository {
+
     override suspend fun sendMessage(chatId: String, text: String): Result<Unit> {
         return withContext(Dispatchers.IO) {
             try {
-                val myId = FirebaseAuth.getInstance().currentUser?.uid ?: return@withContext Result.failure(Exception("NO_SESSION"))
+                val myId = FirebaseAuth.getInstance().currentUser?.uid
+                    ?: return@withContext Result.failure(Exception("NO_SESSION"))
                 val uids = chatId.split("_")
                 val isSelfChat = uids.size >= 2 && uids[0] == uids[1]
 
-                val messageId = firestore.collection("chats").document(chatId).collection("messages").document().id
+                val messageId = firestore.collection("chats")
+                    .document(chatId)
+                    .collection("messages")
+                    .document()
+                    .id
 
                 messageDao.insertMessage(
                     LocalMessageEntity(
@@ -43,9 +49,9 @@ class ChatRepositoryImpl(
                         isRead = false
                     )
                 )
+
                 if (!isSelfChat) {
                     launch(Dispatchers.IO) {
-                        android.util.Log.d("ChatRepository", "⚡ Immediate flush after send")
                         flushUnsentMessages(chatId)
                     }
                 } else {
@@ -53,6 +59,7 @@ class ChatRepositoryImpl(
                     messageDao.markAsDelivered(messageId)
                     messageDao.markAsRead(messageId)
                 }
+
                 Result.success(Unit)
             } catch (e: Exception) {
                 Result.failure(e)
@@ -91,7 +98,7 @@ class ChatRepositoryImpl(
         }
 
         // ============================================================
-        // 1️⃣ КАНАЛ: Отправка неотправленных сообщений (из Room в Firestore)
+        // 1️⃣ КАНАЛ: Отправка неотправленных сообщений
         // ============================================================
         val unsentJob = launch(Dispatchers.IO) {
             android.util.Log.d("ChatRepository", "📡 Subscribing to unsent messages")
@@ -101,7 +108,6 @@ class ChatRepositoryImpl(
 
                 if (unsentList.isNotEmpty()) {
                     try {
-                        // Проверяем онлайн статус собеседника
                         val peerSnapshot = firestore.collection("users")
                             .document(peerId)
                             .get()
@@ -111,7 +117,6 @@ class ChatRepositoryImpl(
                         android.util.Log.d("ChatRepository", "🌐 Peer online: $isPeerOnline")
 
                         if (isPeerOnline) {
-                            // Получаем документ чата с публичными ключами
                             val chatSnapshot = firestore.collection("chats")
                                 .document(chatId)
                                 .get()
@@ -129,14 +134,11 @@ class ChatRepositoryImpl(
                                 chatSnapshot.getString("publicKeyUserA") ?: ""
                             }
 
-                            android.util.Log.d("ChatRepository", "🔑 Peer public key exists: ${peerPublicKey.isNotEmpty()}")
-
                             if (peerPublicKey.isNotEmpty()) {
                                 unsentList.forEach { localMsg ->
                                     try {
                                         android.util.Log.d("ChatRepository", "📤 Sending message: ${localMsg.id}")
 
-                                        // Шифруем сообщение
                                         val encryptedText = CryptoManager.encrypt(localMsg.text, peerPublicKey)
 
                                         val msgDoc = MessageDocument(
@@ -149,7 +151,6 @@ class ChatRepositoryImpl(
                                             isRead = false
                                         )
 
-                                        // Отправляем в Firestore
                                         firestore.collection("chats")
                                             .document(chatId)
                                             .collection("messages")
@@ -157,7 +158,6 @@ class ChatRepositoryImpl(
                                             .set(msgDoc)
                                             .await()
 
-                                        // Помечаем как отправленное
                                         messageDao.markAsSent(localMsg.id)
                                         android.util.Log.d("ChatRepository", "✅ Message sent: ${localMsg.id}")
                                         trySend(Unit)
@@ -177,7 +177,7 @@ class ChatRepositoryImpl(
         }
 
         // ============================================================
-        // 2️⃣ КАНАЛ: Входящие сообщения (от собеседника)
+        // 2️⃣ КАНАЛ: Входящие сообщения + статусы
         // ============================================================
         val inboundListener = firestore.collection("chats")
             .document(chatId)
@@ -198,7 +198,6 @@ class ChatRepositoryImpl(
 
                             launch(Dispatchers.IO) {
                                 try {
-                                    // Получаем приватный ключ для расшифровки
                                     val keyEntity = chatKeyDao.getKeyForChat(chatId)
                                     if (keyEntity == null) {
                                         android.util.Log.e("ChatRepository", "❌ No private key for: $chatId")
@@ -211,7 +210,6 @@ class ChatRepositoryImpl(
                                         return@launch
                                     }
 
-                                    // ✅ Только если сообщение от собеседника (не от себя)
                                     if (remoteMsg.senderId != myId) {
                                         android.util.Log.d("ChatRepository", "🔓 Decrypting message from: ${remoteMsg.senderId}")
 
@@ -220,7 +218,6 @@ class ChatRepositoryImpl(
                                             keyEntity.privateKey
                                         )
 
-                                        // ✅ Сохраняем в Room
                                         messageDao.insertMessage(
                                             LocalMessageEntity(
                                                 id = remoteMsg.id,
@@ -228,37 +225,23 @@ class ChatRepositoryImpl(
                                                 senderId = remoteMsg.senderId,
                                                 text = decryptedText,
                                                 timestamp = remoteMsg.timestamp,
-                                                isSent = true,        // Это входящее, уже отправлено
-                                                isDelivered = true,   // Мы его получили
-                                                isRead = false        // Еще не прочитано
+                                                isSent = true,
+                                                isDelivered = true,
+                                                isRead = false
                                             )
                                         )
                                         android.util.Log.d("ChatRepository", "💾 Message saved to Room: ${remoteMsg.id}")
 
-                                        // ✅ Отправляем подтверждение доставки в ОТДЕЛЬНУЮ коллекцию
-                                        // (чтобы отправитель мог отследить статус)
-                                        firestore.collection("chats")
-                                            .document(chatId)
-                                            .collection("message_statuses")
-                                            .document(remoteMsg.id)
-                                            .set(
-                                                mapOf(
-                                                    "messageId" to remoteMsg.id,
-                                                    "isDelivered" to true,
-                                                    "isRead" to false,
-                                                    "timestamp" to System.currentTimeMillis()
-                                                )
-                                            )
-                                            .await()
+                                        // Обновляем статус доставки
+                                        doc.reference.update("isDelivered", true).await()
                                         android.util.Log.d("ChatRepository", "📤 Delivery confirmation sent")
 
-                                        // ✅ Удаляем сообщение из транзитной коллекции
+                                        // Удаляем из транзитной коллекции
                                         doc.reference.delete().await()
                                         android.util.Log.d("ChatRepository", "🗑️ Message deleted from transit")
 
                                         trySend(Unit)
                                     } else {
-                                        // Это сообщение отправил я сам (дубликат) - просто удаляем
                                         android.util.Log.d("ChatRepository", "⏭️ Skipping my own message: ${remoteMsg.id}")
                                         doc.reference.delete().await()
                                     }
@@ -271,7 +254,6 @@ class ChatRepositoryImpl(
                             android.util.Log.d("ChatRepository", "🗑️ Message removed: ${change.document.id}")
                         }
                         DocumentChange.Type.MODIFIED -> {
-                            // Обрабатываем обновления статусов (для своих сообщений)
                             val doc = change.document
                             launch(Dispatchers.IO) {
                                 try {
@@ -299,51 +281,7 @@ class ChatRepositoryImpl(
             }
 
         // ============================================================
-        // 3️⃣ КАНАЛ: Статусы доставки/прочтения (от собеседника)
-        // ============================================================
-        val deliveryStatusListener = firestore.collection("chats")
-            .document(chatId)
-            .collection("message_statuses")
-            .addSnapshotListener { snapshot, error ->
-                if (error != null || snapshot == null) {
-                    android.util.Log.e("ChatRepository", "❌ Delivery status error", error)
-                    return@addSnapshotListener
-                }
-
-                android.util.Log.d("ChatRepository", "📊 Status changes: ${snapshot.documentChanges.size}")
-
-                snapshot.documentChanges.forEach { change ->
-                    if (change.type == DocumentChange.Type.ADDED) {
-                        val doc = change.document
-                        launch(Dispatchers.IO) {
-                            try {
-                                val messageId = doc.getString("messageId") ?: return@launch
-                                val isDelivered = doc.getBoolean("isDelivered") ?: false
-                                val isRead = doc.getBoolean("isRead") ?: false
-
-                                android.util.Log.d("ChatRepository", "📊 Status update: message=$messageId, delivered=$isDelivered, read=$isRead")
-
-                                // Обновляем статусы в Room (для наших сообщений)
-                                if (isDelivered) {
-                                    messageDao.markAsDelivered(messageId)
-                                }
-                                if (isRead) {
-                                    messageDao.markAsRead(messageId)
-                                }
-
-                                // Удаляем статус после обработки
-                                doc.reference.delete().await()
-                                android.util.Log.d("ChatRepository", "🗑️ Status deleted after processing")
-                            } catch (e: Exception) {
-                                android.util.Log.e("ChatRepository", "❌ Status processing error", e)
-                            }
-                        }
-                    }
-                }
-            }
-
-        // ============================================================
-        // 4️⃣ КАНАЛ: Статус онлайн собеседника
+        // 3️⃣ КАНАЛ: Статус онлайн собеседника (НУЖЕН ДЛЯ ОФФЛАЙН-СООБЩЕНИЙ!)
         // ============================================================
         val statusListener = firestore.collection("users")
             .document(peerId)
@@ -363,39 +301,28 @@ class ChatRepositoryImpl(
             android.util.Log.d("ChatRepository", "🛑 Closing engine for: $chatId")
             unsentJob.cancel()
             inboundListener.remove()
-            deliveryStatusListener.remove()
             statusListener.remove()
         }
     }
 
-    // В ChatRepository.kt добавить метод
     override suspend fun markMessageAsRead(messageId: String): Result<Unit> {
         return withContext(Dispatchers.IO) {
             try {
-                // Получаем сообщение из Room
                 val message = messageDao.getMessageById(messageId)
                 if (message == null) {
                     android.util.Log.e("ChatRepository", "❌ Message not found: $messageId")
                     return@withContext Result.failure(Exception("Message not found"))
                 }
 
-                // Обновляем в Room
                 messageDao.markAsRead(messageId)
                 android.util.Log.d("ChatRepository", "✅ Message marked as read in Room: $messageId")
 
-                // Отправляем подтверждение прочтения в Firestore
+                // ✅ Отправляем подтверждение прочтения прямо в коллекцию messages
                 firestore.collection("chats")
                     .document(message.chatId)
-                    .collection("message_statuses")
+                    .collection("messages")
                     .document(messageId)
-                    .set(
-                        mapOf(
-                            "messageId" to messageId,
-                            "isDelivered" to true,
-                            "isRead" to true,
-                            "timestamp" to System.currentTimeMillis()
-                        )
-                    )
+                    .update("isRead", true)
                     .await()
                 android.util.Log.d("ChatRepository", "📤 Read confirmation sent to Firestore")
 
@@ -437,6 +364,7 @@ class ChatRepositoryImpl(
                     return@withContext Result.success(Unit)
                 }
 
+                // ✅ РАЗОВАЯ проверка статуса
                 val peerSnapshot = firestore.collection("users")
                     .document(peerId)
                     .get()
@@ -490,7 +418,6 @@ class ChatRepositoryImpl(
                             .set(msgDoc)
                             .await()
 
-                        // Помечаем как отправленное
                         messageDao.markAsSent(localMsg.id)
                         android.util.Log.d("ChatRepository", "✅ Sent: ${localMsg.id}")
                     } catch (e: Exception) {
@@ -505,8 +432,6 @@ class ChatRepositoryImpl(
             }
         }
     }
-
-
 
     override fun startMessagesTransit(chatId: String): Flow<Unit> = callbackFlow {
         val myId = FirebaseAuth.getInstance().currentUser?.uid
@@ -535,7 +460,10 @@ class ChatRepositoryImpl(
                                     chatId = remoteMsg.chatId,
                                     senderId = remoteMsg.senderId,
                                     text = decryptedText,
-                                    timestamp = remoteMsg.timestamp
+                                    timestamp = remoteMsg.timestamp,
+                                    isSent = true,
+                                    isDelivered = true,
+                                    isRead = false
                                 )
                             )
                             firestore.collection("chats").document(chatId)
@@ -549,7 +477,6 @@ class ChatRepositoryImpl(
         awaitClose { listener.remove() }
     }
 
-
     override fun getLocalMessages(chatId: String): Flow<List<LocalMessageEntity>> {
         return messageDao.getMessagesForChat(chatId)
     }
@@ -557,5 +484,4 @@ class ChatRepositoryImpl(
     override fun getLastLocalMessage(chatId: String): Flow<LocalMessageEntity?> {
         return messageDao.getLastMessageForChat(chatId)
     }
-
 }

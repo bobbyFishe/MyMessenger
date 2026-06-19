@@ -2,10 +2,8 @@ package com.example.mymessenger.ui.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import coil.util.CoilUtils.result
 import com.example.mymessenger.R
 import com.example.mymessenger.domain.model.ChatDocument
-import com.example.mymessenger.domain.model.ChatUiModel
 import com.example.mymessenger.domain.model.User
 import com.example.mymessenger.domain.repository.ChatRepository
 import com.example.mymessenger.domain.repository.UserRepository
@@ -23,7 +21,6 @@ sealed interface MainUiState {
         val user: User,
         val chats: List<ChatDocument>
     ) : MainUiState
-
     data class Error(val messageResId: Int) : MainUiState
 }
 
@@ -32,6 +29,7 @@ class MainViewModel(
     private val firebaseAuth: FirebaseAuth,
     private val chatRepository: ChatRepository
 ) : ViewModel() {
+
     private val _uiState = MutableStateFlow<MainUiState>(MainUiState.Loading)
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
@@ -40,6 +38,9 @@ class MainViewModel(
 
     private val _isChatCreatedSuccessfully = MutableStateFlow(false)
     val isChatCreatedSuccessfully = _isChatCreatedSuccessfully.asStateFlow()
+
+    // ✅ Кеш имён пользователей (экономия чтений)
+    private val nameCache = mutableMapOf<String, String>()
 
     init {
         loadCurrentUserData()
@@ -55,9 +56,13 @@ class MainViewModel(
         viewModelScope.launch {
             userRepository.getCurrentUser(uid).fold(
                 onSuccess = { userData ->
+                    // ✅ Кешируем своё имя
+                    nameCache[userData.uid] = userData.name
+
                     _uiState.value = MainUiState.Success(user = userData, chats = emptyList())
 
                     viewModelScope.launch {
+                        // ✅ ТОЛЬКО ОДИН слушатель — на список чатов
                         userRepository.observeUserChats(userData.uid)
                             .catch { exception ->
                                 android.util.Log.e("MainViewModel", "❌ Error observing chats", exception)
@@ -66,19 +71,34 @@ class MainViewModel(
                             .collect { chatsList ->
                                 android.util.Log.d("MainViewModel", "📋 Chats updated: ${chatsList.size}")
 
+                                // ✅ Кешируем имена собеседников
                                 chatsList.forEach { chatDoc ->
-                                    viewModelScope.launch {
-                                        android.util.Log.d("MainViewModel", "🚀 Starting P2P engine for: ${chatDoc.id}")
-                                        chatRepository.startP2PDeliveryEngine(chatDoc.id)
-                                            .catch { e ->
-                                                android.util.Log.e("MainViewModel", "❌ Engine error for ${chatDoc.id}", e)
-                                            }
-                                            .collect {
-                                                android.util.Log.d("MainViewModel", "✅ Engine emitted for ${chatDoc.id}")
-                                            }
+                                    val uids = chatDoc.id.split("_")
+                                    val peerId = uids.firstOrNull { it != userData.uid }
+                                    if (peerId != null && !nameCache.containsKey(peerId)) {
+                                        viewModelScope.launch {
+                                            val peerName = userRepository.getCurrentUser(peerId)
+                                                .getOrNull()?.name ?: "Пользователь"
+                                            nameCache[peerId] = peerName
+                                        }
                                     }
+                                }
 
-                                    userRepository.completeCryptoHandshake(chatDoc)
+                                // ✅ Запускаем P2P engine только ДЛЯ НОВЫХ чатов
+                                val currentChatIds = (uiState.value as? MainUiState.Success)?.chats?.map { it.id } ?: emptyList()
+                                chatsList.forEach { chatDoc ->
+                                    if (!currentChatIds.contains(chatDoc.id)) {
+                                        viewModelScope.launch {
+                                            android.util.Log.d("MainViewModel", "🚀 Starting P2P engine for: ${chatDoc.id}")
+                                            chatRepository.startP2PDeliveryEngine(chatDoc.id)
+                                                .catch { e ->
+                                                    android.util.Log.e("MainViewModel", "❌ Engine error for ${chatDoc.id}", e)
+                                                }
+                                                .collect {
+                                                    android.util.Log.d("MainViewModel", "✅ Engine emitted for ${chatDoc.id}")
+                                                }
+                                        }
+                                    }
                                 }
 
                                 _uiState.update { currentState ->
@@ -101,9 +121,13 @@ class MainViewModel(
     fun getLastMessageFlow(chatId: String) = chatRepository.getLastLocalMessage(chatId)
 
     suspend fun getPeerName(peerId: String): String {
-        return userRepository.getCurrentUser(peerId).getOrNull()?.name ?: "Пользователь"
+        // ✅ Сначала проверяем кеш
+        return nameCache[peerId] ?: run {
+            val name = userRepository.getCurrentUser(peerId).getOrNull()?.name ?: "Пользователь"
+            nameCache[peerId] = name
+            name
+        }
     }
-
 
     fun logout() {
         firebaseAuth.signOut()
