@@ -402,4 +402,13 @@ class UserRepositoryImpl(
         }
     }
 
+    override suspend fun getCachedPeerPublicKey(chatId: String, myId: String): String? {
+        return withContext(Dispatchers.IO) {
+            val chat = chatDao.getChatById(chatId) ?: return@withContext null
+            val uids = chatId.split("_")
+            val isUserA = myId == uids[0]
+            if (isUserA) chat.publicKeyUserB else chat.publicKeyUserA
+        }
+    }
+
 }

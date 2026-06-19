@@ -9,12 +9,14 @@ import com.example.mymessenger.domain.model.User
 import com.example.mymessenger.domain.repository.ChatRepository
 import com.example.mymessenger.domain.repository.UserRepository
 import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.time.Duration.Companion.milliseconds
 
 sealed interface MainUiState {
     object Loading : MainUiState
@@ -67,7 +69,15 @@ class MainViewModel(
                             .collect { chatsList ->
                                 android.util.Log.d("MainViewModel", "📋 Chats updated: ${chatsList.size}")
 
-                                // ✅ Загружаем имена всех собеседников за 1 запрос
+                                // ✅ 1. ОТПРАВЛЯЕМ ВСЕ НЕОТПРАВЛЕННЫЕ СООБЩЕНИЯ
+                                chatsList.forEach { chatDoc ->
+                                    viewModelScope.launch {
+                                        userRepository.completeCryptoHandshake(chatDoc)
+                                        chatRepository.flushUnsentMessages(chatDoc.id)
+                                    }
+                                }
+
+                                // ✅ 2. Загружаем имена всех собеседников за 1 запрос
                                 val peerIds = chatsList.mapNotNull { chatDoc ->
                                     chatDoc.participantIds.firstOrNull { it != userData.uid }
                                 }.distinct()
@@ -76,7 +86,6 @@ class MainViewModel(
                                     viewModelScope.launch {
                                         val result = userRepository.getUsersByIds(peerIds)
                                         result.onSuccess { users ->
-                                            // ✅ Сохраняем в nameCache
                                             users.forEach { user ->
                                                 nameCache[user.uid] = user.name
                                             }
@@ -85,21 +94,7 @@ class MainViewModel(
                                     }
                                 }
 
-                                chatsList.forEach { chatDoc ->
-                                    userRepository.completeCryptoHandshake(chatDoc)
-
-                                    val uids = chatDoc.id.split("_")
-                                    val peerId = uids.firstOrNull { it != userData.uid }
-                                    if (peerId != null && !nameCache.containsKey(peerId)) {
-                                        viewModelScope.launch {
-                                            val peerName = userRepository.getCurrentUser(peerId)
-                                                .getOrNull()?.name ?: "Пользователь"
-                                            nameCache[peerId] = peerName
-                                        }
-                                    }
-                                }
-
-                                // Запускаем engine для новых чатов
+                                // ✅ 3. Запускаем engine для новых чатов
                                 val currentChatIds = (uiState.value as? MainUiState.Success)?.chats?.map { it.id } ?: emptyList()
                                 chatsList.forEach { chatDoc ->
                                     if (!currentChatIds.contains(chatDoc.id)) {
@@ -220,6 +215,32 @@ class MainViewModel(
                     }
                 }
             )
+        }
+    }
+
+    fun flushAllUnsentMessages() {
+        android.util.Log.d("MainViewModel", "🔥 flushAllUnsentMessages CALLED")
+
+        viewModelScope.launch {
+            // Ждём, пока загрузятся чаты
+            var attempts = 0
+            while (attempts < 20 && _uiState.value !is MainUiState.Success) {
+                delay(200.milliseconds)
+                attempts++
+                android.util.Log.d("MainViewModel", "⏳ Waiting for chats to load... attempt $attempts")
+            }
+
+            val currentState = _uiState.value
+            android.util.Log.d("MainViewModel", "🔥 currentState: $currentState")
+
+            if (currentState is MainUiState.Success) {
+                android.util.Log.d("MainViewModel", "🔄 Flushing unsent messages for ${currentState.chats.size} chats")
+                currentState.chats.forEach { chatDoc ->
+                    chatRepository.flushUnsentMessages(chatDoc.id)
+                }
+            } else {
+                android.util.Log.e("MainViewModel", "❌ State is not Success: $currentState")
+            }
         }
     }
 

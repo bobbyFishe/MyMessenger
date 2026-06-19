@@ -54,6 +54,10 @@ fun MainScreen(
     val searchError by viewModel.searchError.collectAsState()
     val isChatCreatedSuccessfully by viewModel.isChatCreatedSuccessfully.collectAsState()
 
+    LaunchedEffect(Unit) {
+        viewModel.flushAllUnsentMessages()
+    }
+
     MainScreenContent(
         uiState = uiState,
         searchError = searchError,
@@ -86,6 +90,7 @@ fun MainScreenContent(
     var isMenuExpanded by remember { mutableStateOf(false) }
     var isShowSearchDialog by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+
 
     LaunchedEffect(isChatCreatedSuccessfully) {
         if (isChatCreatedSuccessfully) {

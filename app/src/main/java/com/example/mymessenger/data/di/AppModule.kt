@@ -39,7 +39,8 @@ val appModule = module {
         ChatRepositoryImpl(
             firestore = get(),
             messageDao = get(),
-            chatKeyDao = get()
+            chatKeyDao = get(),
+            userRepository = get()
         )
     }
     single { get<AppDatabase>().chatDao() }

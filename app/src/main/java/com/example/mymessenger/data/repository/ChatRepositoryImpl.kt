@@ -6,6 +6,7 @@ import com.example.mymessenger.data.local.entities.LocalMessageEntity
 import com.example.mymessenger.data.utils.CryptoManager
 import com.example.mymessenger.domain.model.MessageDocument
 import com.example.mymessenger.domain.repository.ChatRepository
+import com.example.mymessenger.domain.repository.UserRepository
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FirebaseFirestore
@@ -20,12 +21,16 @@ import kotlinx.coroutines.withContext
 class ChatRepositoryImpl(
     private val firestore: FirebaseFirestore,
     private val messageDao: MessageDao,
-    private val chatKeyDao: ChatKeyDao
+    private val chatKeyDao: ChatKeyDao,
+    private val userRepository: UserRepository
+
 ) : ChatRepository {
 
     override suspend fun sendMessage(chatId: String, text: String): Result<Unit> {
         return withContext(Dispatchers.IO) {
             try {
+                android.util.Log.d("ChatRepository", "📝 sendMessage START: chatId=$chatId, text=$text")
+
                 val myId = FirebaseAuth.getInstance().currentUser?.uid
                     ?: return@withContext Result.failure(Exception("NO_SESSION"))
                 val uids = chatId.split("_")
@@ -36,6 +41,8 @@ class ChatRepositoryImpl(
                     .collection("messages")
                     .document()
                     .id
+
+                android.util.Log.d("ChatRepository", "📝 messageId=$messageId")
 
                 messageDao.insertMessage(
                     LocalMessageEntity(
@@ -50,10 +57,11 @@ class ChatRepositoryImpl(
                     )
                 )
 
+                android.util.Log.d("ChatRepository", "✅ Message saved to Room")
+
                 if (!isSelfChat) {
-                    launch(Dispatchers.IO) {
-                        flushUnsentMessages(chatId)
-                    }
+                    android.util.Log.d("ChatRepository", "⚡ Calling flushUnsentMessages")
+                    flushUnsentMessages(chatId)
                 } else {
                     messageDao.markAsSent(messageId)
                     messageDao.markAsDelivered(messageId)
@@ -62,6 +70,7 @@ class ChatRepositoryImpl(
 
                 Result.success(Unit)
             } catch (e: Exception) {
+                android.util.Log.e("ChatRepository", "❌ sendMessage error", e)
                 Result.failure(e)
             }
         }
@@ -364,18 +373,31 @@ class ChatRepositoryImpl(
                     return@withContext Result.success(Unit)
                 }
 
-                // ✅ РАЗОВАЯ проверка статуса
+                // ✅ ПРОВЕРЯЕМ СТАТУС ОНЛАЙН ВСЕГДА!
                 val peerSnapshot = firestore.collection("users")
                     .document(peerId)
                     .get()
                     .await()
                 val isPeerOnline = peerSnapshot.getBoolean("isOnline") ?: false
 
+                android.util.Log.d("ChatRepository", "🌐 Peer online: $isPeerOnline")
+
                 if (!isPeerOnline) {
-                    android.util.Log.d("ChatRepository", "⏳ Peer offline")
+                    android.util.Log.d("ChatRepository", "⏳ Peer offline, messages kept in Room")
                     return@withContext Result.success(Unit)
                 }
 
+                // ✅ Публичный ключ — из кеша Room (0 чтений!)
+                val cachedKey = userRepository.getCachedPeerPublicKey(chatId, myId)
+
+                if (cachedKey != null && cachedKey.isNotEmpty()) {
+                    android.util.Log.d("ChatRepository", "🔑 Using cached public key")
+                    sendMessages(unsent, cachedKey, chatId, myId)
+                    return@withContext Result.success(Unit)
+                }
+
+                // ❌ Только если нет в кеше — идём в Firestore (1 чтение)
+                android.util.Log.d("ChatRepository", "🌐 Fetching public key from Firestore")
                 val chatSnapshot = firestore.collection("chats")
                     .document(chatId)
                     .get()
@@ -398,37 +420,46 @@ class ChatRepositoryImpl(
                     return@withContext Result.failure(Exception("NO_PUBLIC_KEY"))
                 }
 
-                unsent.forEach { localMsg ->
-                    try {
-                        val encryptedText = CryptoManager.encrypt(localMsg.text, peerPublicKey)
-                        val msgDoc = MessageDocument(
-                            id = localMsg.id,
-                            chatId = chatId,
-                            senderId = myId,
-                            encryptedText = encryptedText,
-                            timestamp = localMsg.timestamp,
-                            isDelivered = false,
-                            isRead = false
-                        )
-
-                        firestore.collection("chats")
-                            .document(chatId)
-                            .collection("messages")
-                            .document(localMsg.id)
-                            .set(msgDoc)
-                            .await()
-
-                        messageDao.markAsSent(localMsg.id)
-                        android.util.Log.d("ChatRepository", "✅ Sent: ${localMsg.id}")
-                    } catch (e: Exception) {
-                        android.util.Log.e("ChatRepository", "❌ Send fail", e)
-                    }
-                }
-
+                sendMessages(unsent, peerPublicKey, chatId, myId)
                 Result.success(Unit)
             } catch (e: Exception) {
                 android.util.Log.e("ChatRepository", "❌ Flush error", e)
                 Result.failure(e)
+            }
+        }
+    }
+
+    private suspend fun sendMessages(
+        unsent: List<LocalMessageEntity>,
+        peerPublicKey: String,
+        chatId: String,
+        myId: String
+    ) {
+        unsent.forEach { localMsg ->
+            try {
+                val encryptedText = CryptoManager.encrypt(localMsg.text, peerPublicKey)
+
+                val msgDoc = MessageDocument(
+                    id = localMsg.id,
+                    chatId = chatId,
+                    senderId = myId,
+                    encryptedText = encryptedText,
+                    timestamp = localMsg.timestamp,
+                    isDelivered = false,
+                    isRead = false
+                )
+
+                firestore.collection("chats")
+                    .document(chatId)
+                    .collection("messages")
+                    .document(localMsg.id)
+                    .set(msgDoc)
+                    .await()
+
+                messageDao.markAsSent(localMsg.id)
+                android.util.Log.d("ChatRepository", "✅ Sent: ${localMsg.id}")
+            } catch (e: Exception) {
+                android.util.Log.e("ChatRepository", "❌ Failed to send: ${localMsg.id}", e)
             }
         }
     }
