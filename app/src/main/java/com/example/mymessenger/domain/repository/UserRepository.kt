@@ -12,4 +12,6 @@ interface UserRepository {
     fun observeUserChats(currentUid: String): Flow<List<ChatDocument>>
     suspend fun completeCryptoHandshake(chatDoc: ChatDocument): Result<Unit>
     suspend fun setUserOnlineStatus(uid: String, isOnline: Boolean): Result<Unit>
+    fun observeUserChatsWithCache(currentUid: String): Flow<List<ChatDocument>>
+    suspend fun refreshChatsCache(currentUid: String)
 }

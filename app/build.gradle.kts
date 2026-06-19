@@ -60,7 +60,7 @@ dependencies {
 
     implementation("io.coil-kt:coil-compose:2.6.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
-
+    implementation("com.google.code.gson:gson:2.10.1")
     implementation("io.insert-koin:koin-android:4.0.2")
     implementation("io.insert-koin:koin-androidx-compose:4.0.2")
     implementation("androidx.lifecycle:lifecycle-process:2.8.7")

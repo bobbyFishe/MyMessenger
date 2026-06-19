@@ -15,11 +15,11 @@
         <DialogSelection />
       </SelectionState>
       <SelectionState runConfigName="main">
-        <option name="selectionMode" value="DIALOG" />
-        <DropdownSelection timestamp="2026-06-17T17:36:26.484659273Z">
+        <option name="selectionMode" value="DROPDOWN" />
+        <DropdownSelection timestamp="2026-06-19T12:23:57.486993389Z">
           <Target type="DEFAULT_BOOT">
             <handle>
-              <DeviceId pluginId="PhysicalDevice" identifier="serial=R58N8159LQT" />
+              <DeviceId pluginId="LocalEmulator" identifier="path=/home/susykerr/.android/avd/Medium_Phone.avd" />
             </handle>
           </Target>
         </DropdownSelection>

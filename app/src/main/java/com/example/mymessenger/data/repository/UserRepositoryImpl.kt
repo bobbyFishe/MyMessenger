@@ -8,8 +8,10 @@ import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.tasks.await
 import java.security.KeyPairGenerator
 import android.util.Base64
+import com.example.mymessenger.data.local.dao.ChatDao
 import com.example.mymessenger.data.local.dao.ChatKeyDao
 import com.example.mymessenger.data.local.dao.ContactDao
+import com.example.mymessenger.data.local.entities.ChatEntity
 import com.example.mymessenger.data.local.entities.ChatKeyEntity
 import com.example.mymessenger.data.local.entities.ContactEntity
 import com.google.firebase.auth.FirebaseAuth
@@ -17,13 +19,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 
 class UserRepositoryImpl(
     private val firestore: FirebaseFirestore,
     private val chatKeyDao: ChatKeyDao,
-    private val contactDao: ContactDao
+    private val contactDao: ContactDao,
+    private val chatDao: ChatDao
 ) : UserRepository {
     override suspend fun getCurrentUser(uid: String): Result<User> {
         return withContext(Dispatchers.IO) {
@@ -91,60 +95,183 @@ class UserRepositoryImpl(
         peerPublicKey: String?
     ): Result<Unit> {
         return try {
-            val myId = FirebaseAuth.getInstance().currentUser?.uid ?:
-            return Result.failure(Exception("Сессия не найдена"))
+            android.util.Log.d("UserRepository", "🔐 createEncryptedChat START")
+            android.util.Log.d("UserRepository", "🔐 peerId=$peerId")
+
+            val myId = FirebaseAuth.getInstance().currentUser?.uid
+            android.util.Log.d("UserRepository", "🔐 myId=$myId")
+
+            if (myId == null) {
+                android.util.Log.e("UserRepository", "❌ No session")
+                return Result.failure(Exception("Сессия не найдена"))
+            }
 
             val idList = listOf(myId, peerId).sorted()
             val chatId = idList.joinToString("_")
+            android.util.Log.d("UserRepository", "🔐 chatId=$chatId")
 
-//            val chatSnapshot = firestore.collection("chats")
-//                .document(chatId)
-//                .get()
-//                .await()
+            // ✅ Проверяем чат в Firestore
+            android.util.Log.d("UserRepository", "🔐 Checking chat in Firestore...")
+            val chatSnapshot = firestore.collection("chats")
+                .document(chatId)
+                .get()
+                .await()
+            android.util.Log.d("UserRepository", "🔐 chatExists=${chatSnapshot.exists()}")
 
+            val chatExists = chatSnapshot.exists()
             val hasLocalKey = chatKeyDao.getKeyForChat(chatId) != null
+            android.util.Log.d("UserRepository", "🔐 hasLocalKey=$hasLocalKey")
 
-//            if (chatSnapshot.exists() && hasLocalKey) {
-//                return Result.success(Unit)
-//            }
-
-            if (hasLocalKey) {
-                // Если ключ на телефоне уже сгенерирован ранее — просто выходим
+            if (chatExists && hasLocalKey) {
+                android.util.Log.d("UserRepository", "⏭️ Chat already exists")
                 return Result.success(Unit)
             }
 
+            // ✅ Генерируем ключи
+            android.util.Log.d("UserRepository", "🔑 Generating RSA keys...")
             val kpg = KeyPairGenerator.getInstance("RSA")
             kpg.initialize(2048)
             val kp = kpg.generateKeyPair()
 
             val myPublicKeyString = Base64.encodeToString(kp.public.encoded, Base64.NO_WRAP)
             val myPrivateKeyString = Base64.encodeToString(kp.private.encoded, Base64.NO_WRAP)
+            android.util.Log.d("UserRepository", "🔑 Keys generated")
 
+            android.util.Log.d("UserRepository", "💾 Saving private key to Room...")
             chatKeyDao.saveKey(
                 ChatKeyEntity(
                     chatId = chatId,
                     privateKey = myPrivateKeyString
                 )
             )
+            android.util.Log.d("UserRepository", "✅ Private key saved")
+
+            val isUserA = myId == idList[0]
+            android.util.Log.d("UserRepository", "🔐 isUserA=$isUserA")
 
             val chatDoc = ChatDocument(
                 id = chatId,
                 participantIds = idList,
-
-                publicKeyUserA = if (myId == idList[0]) myPublicKeyString else "",
-                publicKeyUserB = if (myId == idList[1]) myPublicKeyString else "",
+                publicKeyUserA = if (isUserA) myPublicKeyString else (peerPublicKey ?: ""),
+                publicKeyUserB = if (!isUserA) myPublicKeyString else (peerPublicKey ?: ""),
                 createdAt = System.currentTimeMillis()
             )
 
+            android.util.Log.d("UserRepository", "📤 Saving chat to Firestore: participantIds=${chatDoc.participantIds}")
             firestore.collection("chats")
                 .document(chatId)
-                .set(chatDoc, com.google.firebase.firestore.SetOptions.merge())
+                .set(chatDoc)
                 .await()
+            android.util.Log.d("UserRepository", "✅ Chat created: $chatId")
 
             Result.success(Unit)
         } catch (e: Exception) {
-            android.util.Log.e("CRYPTO_CHAT_ERR", "Ошибка в createEncryptedChat: ", e)
+            android.util.Log.e("UserRepository", "❌ Error in createEncryptedChat: ", e)
             Result.failure(e)
+        }
+    }
+
+    override fun observeUserChatsWithCache(currentUid: String): Flow<List<ChatDocument>> = callbackFlow {
+        android.util.Log.d("UserRepository", "📡 observeUserChatsWithCache: $currentUid")
+
+        // ✅ Сначала подписываемся на Firestore
+        val listener = firestore.collection("chats")
+            .whereArrayContains("participantIds", currentUid)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    android.util.Log.e("UserRepository", "❌ Error: ${error.message}")
+                    close(error)
+                    return@addSnapshotListener
+                }
+
+                if (snapshot != null) {
+                    android.util.Log.d("UserRepository", "📥 Received ${snapshot.documents.size} chats from Firestore")
+
+                    val chatDocs = snapshot.documents.mapNotNull { doc ->
+                        doc.toObject(ChatDocument::class.java)
+                    }
+
+                    // ✅ Сохраняем в кеш
+                    launch(Dispatchers.IO) {
+                        try {
+                            chatDao.clearAll()
+                            val entities = chatDocs.map { doc ->
+                                ChatEntity(
+                                    id = doc.id,
+                                    participantIds = doc.participantIds,
+                                    publicKeyUserA = doc.publicKeyUserA,
+                                    publicKeyUserB = doc.publicKeyUserB,
+                                    createdAt = doc.createdAt,
+                                    lastUpdated = System.currentTimeMillis()
+                                )
+                            }
+                            chatDao.saveChats(entities)
+                            android.util.Log.d("UserRepository", "💾 Saved ${entities.size} chats to cache")
+                        } catch (e: Exception) {
+                            android.util.Log.e("UserRepository", "❌ Error saving to cache", e)
+                        }
+                    }
+
+                    // ✅ Отправляем в UI
+                    trySend(chatDocs)
+                }
+            }
+
+        // ✅ Потом отправляем кеш из Room (если есть)
+        launch(Dispatchers.IO) {
+            chatDao.getChats().collect { chatEntities ->
+                if (chatEntities.isNotEmpty()) {
+                    android.util.Log.d("UserRepository", "📦 Sending ${chatEntities.size} chats from cache")
+                    val chatDocs = chatEntities.map { entity ->
+                        ChatDocument(
+                            id = entity.id,
+                            participantIds = entity.participantIds,
+                            publicKeyUserA = entity.publicKeyUserA,
+                            publicKeyUserB = entity.publicKeyUserB,
+                            createdAt = entity.createdAt
+                        )
+                    }
+                    trySend(chatDocs)
+                }
+            }
+        }
+
+        awaitClose {
+            android.util.Log.d("UserRepository", "🛑 Stopped observing chats")
+            listener.remove()
+        }
+    }
+
+    override suspend fun refreshChatsCache(currentUid: String) {
+        withContext(Dispatchers.IO) {
+            try {
+                android.util.Log.d("UserRepository", "🔄 Refreshing chats cache")
+
+                val snapshot = firestore.collection("chats")
+                    .whereArrayContains("participantIds", currentUid)
+                    .get()
+                    .await()
+
+                val chatDocs = snapshot.documents.mapNotNull { doc ->
+                    doc.toObject(ChatDocument::class.java)
+                }
+
+                chatDao.clearAll()
+                val entities = chatDocs.map { doc ->
+                    ChatEntity(
+                        id = doc.id,
+                        participantIds = doc.participantIds,
+                        publicKeyUserA = doc.publicKeyUserA,
+                        publicKeyUserB = doc.publicKeyUserB,
+                        createdAt = doc.createdAt,
+                        lastUpdated = System.currentTimeMillis()
+                    )
+                }
+                chatDao.saveChats(entities)
+                android.util.Log.d("UserRepository", "✅ Cache refreshed: ${entities.size} chats")
+            } catch (e: Exception) {
+                android.util.Log.e("UserRepository", "❌ Error refreshing cache", e)
+            }
         }
     }
 
