@@ -3,6 +3,7 @@ package com.example.mymessenger.ui.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.mymessenger.R
+import com.example.mymessenger.data.local.entities.ContactEntity
 import com.example.mymessenger.domain.model.ChatDocument
 import com.example.mymessenger.domain.model.User
 import com.example.mymessenger.domain.repository.ChatRepository
@@ -43,7 +44,7 @@ class MainViewModel(
     init {
         loadCurrentUserData()
     }
-
+    // ui/viewmodel/MainViewModel.kt
     private fun loadCurrentUserData() {
         val uid = firebaseAuth.currentUser?.uid
         if (uid == null) {
@@ -65,6 +66,24 @@ class MainViewModel(
                             }
                             .collect { chatsList ->
                                 android.util.Log.d("MainViewModel", "📋 Chats updated: ${chatsList.size}")
+
+                                // ✅ Загружаем имена всех собеседников за 1 запрос
+                                val peerIds = chatsList.mapNotNull { chatDoc ->
+                                    chatDoc.participantIds.firstOrNull { it != userData.uid }
+                                }.distinct()
+
+                                if (peerIds.isNotEmpty()) {
+                                    viewModelScope.launch {
+                                        val result = userRepository.getUsersByIds(peerIds)
+                                        result.onSuccess { users ->
+                                            // ✅ Сохраняем в nameCache
+                                            users.forEach { user ->
+                                                nameCache[user.uid] = user.name
+                                            }
+                                            android.util.Log.d("MainViewModel", "✅ Loaded ${users.size} peer names in 1 query")
+                                        }
+                                    }
+                                }
 
                                 chatsList.forEach { chatDoc ->
                                     userRepository.completeCryptoHandshake(chatDoc)
@@ -116,12 +135,34 @@ class MainViewModel(
 
     fun getLastMessageFlow(chatId: String) = chatRepository.getLastLocalMessage(chatId)
 
+    // ui/viewmodel/MainViewModel.kt
     suspend fun getPeerName(peerId: String): String {
-        return nameCache[peerId] ?: run {
-            val name = userRepository.getCurrentUser(peerId).getOrNull()?.name ?: "Пользователь"
-            nameCache[peerId] = name
-            name
+        // 1️⃣ Кеш памяти
+        nameCache[peerId]?.let { return it }
+
+        // 2️⃣ Room (0 чтений)
+        val cachedContact = userRepository.getCachedContact(peerId)
+        if (cachedContact != null) {
+            nameCache[peerId] = cachedContact.name
+            return cachedContact.name
         }
+
+        // 3️⃣ Firestore (1 чтение)
+        val name = userRepository.getCurrentUser(peerId).getOrNull()?.name ?: "Пользователь"
+        nameCache[peerId] = name
+
+        // Сохраняем в Room
+        viewModelScope.launch {
+            userRepository.saveContact(
+                ContactEntity(
+                    uid = peerId,
+                    name = name,
+                    timestamp = System.currentTimeMillis()
+                )
+            )
+        }
+
+        return name
     }
 
     fun logout() {

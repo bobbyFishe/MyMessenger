@@ -1,5 +1,6 @@
 package com.example.mymessenger.domain.repository
 
+import com.example.mymessenger.data.local.entities.ContactEntity
 import com.example.mymessenger.domain.model.ChatDocument
 import com.example.mymessenger.domain.model.User
 import kotlinx.coroutines.flow.Flow
@@ -14,4 +15,7 @@ interface UserRepository {
     suspend fun setUserOnlineStatus(uid: String, isOnline: Boolean): Result<Unit>
     fun observeUserChatsWithCache(currentUid: String): Flow<List<ChatDocument>>
     suspend fun refreshChatsCache(currentUid: String)
+    suspend fun getUsersByIds(userIds: List<String>): Result<List<User>>
+    suspend fun getCachedContact(uid: String): ContactEntity?
+    suspend fun saveContact(contact: ContactEntity): Result<Unit>
 }

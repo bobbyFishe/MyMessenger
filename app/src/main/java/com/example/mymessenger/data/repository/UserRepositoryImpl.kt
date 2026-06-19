@@ -353,4 +353,53 @@ class UserRepositoryImpl(
         }
     }
 
+    override suspend fun getCachedContact(uid: String): ContactEntity? {
+        return withContext(Dispatchers.IO) {
+            contactDao.getContactByUid(uid)
+        }
+    }
+
+    // data/repository/UserRepositoryImpl.kt
+    override suspend fun getUsersByIds(userIds: List<String>): Result<List<User>> {
+        return withContext(Dispatchers.IO) {
+            try {
+                // ✅ Загружаем ВСЕХ пользователей за 1 запрос!
+                val snapshot = firestore.collection(Constants.FIRESTORE_USERS_COLLECTION)
+                    .whereIn("uid", userIds)  // ← 1 запрос для всех UID!
+                    .get()
+                    .await()
+
+                val users = snapshot.documents.mapNotNull { doc ->
+                    doc.toObject(User::class.java)
+                }
+
+                // ✅ Сохраняем в Room (кеш) — nameCache здесь не используем
+                users.forEach { user ->
+                    contactDao.saveContact(
+                        ContactEntity(
+                            uid = user.uid,
+                            name = user.name,
+                            timestamp = System.currentTimeMillis()
+                        )
+                    )
+                }
+
+                Result.success(users)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+    }
+
+    override suspend fun saveContact(contact: ContactEntity): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                contactDao.saveContact(contact)
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+    }
+
 }
