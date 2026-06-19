@@ -89,10 +89,10 @@ class RegisterViewModel(
 
                 val checkResult = checkNameUseCase(finalName)
 
-                if (checkResult.isFailure) {
-                    isTaken = false
+                isTaken = if (checkResult.isFailure) {
+                    false
                 } else {
-                    isTaken = checkResult.getOrDefault(false)
+                    checkResult.getOrDefault(false)
                 }
             }
             if (finalName.isEmpty()) {

@@ -11,4 +11,5 @@ interface ChatRepository {
     suspend fun flushUnsentMessages(chatId: String): Result<Unit>
     fun startP2PDeliveryEngine(chatId: String): Flow<Unit>
     suspend fun forceSync(chatId: String): Result<Unit>
+    suspend fun markMessageAsRead(messageId: String): Result<Unit>
 }

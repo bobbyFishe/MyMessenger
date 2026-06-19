@@ -21,9 +21,20 @@ interface MessageDao {
     @Query("UPDATE messages SET isSent = 1 WHERE id = :messageId")
     suspend fun markAsSent(messageId: String): Int
 
+    @Query("UPDATE messages SET isDelivered = 1 WHERE id = :messageId")
+    suspend fun markAsDelivered(messageId: String): Int
+
+    @Query("UPDATE messages SET isRead = 1 WHERE id = :messageId")
+    suspend fun markAsRead(messageId: String): Int
+
     @Query("SELECT * FROM messages WHERE chatId = :chatId AND isSent = 0 ORDER BY timestamp ASC")
     suspend fun getUnsentMessages(chatId: String): List<LocalMessageEntity>
 
     @Query("SELECT * FROM messages WHERE chatId = :chatId AND isSent = 0 ORDER BY timestamp ASC")
     fun getUnsentMessagesFlow(chatId: String): Flow<List<LocalMessageEntity>>
+
+    @Query("SELECT COUNT(*) FROM messages WHERE chatId = :chatId AND senderId != :myId AND isRead = 0")
+    suspend fun getUnreadCount(chatId: String, myId: String): Int
+    @Query("SELECT * FROM messages WHERE id = :messageId LIMIT 1")
+    suspend fun getMessageById(messageId: String): LocalMessageEntity?
 }

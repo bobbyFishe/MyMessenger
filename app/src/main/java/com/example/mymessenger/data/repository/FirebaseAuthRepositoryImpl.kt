@@ -45,7 +45,6 @@ class FirebaseAuthRepositoryImpl : AuthRepository {
             .limit(1)
             .get()
             .await()
-
         Result.success(!querySnapshot.isEmpty)
     } catch (e: Exception) {
         Result.failure(e)

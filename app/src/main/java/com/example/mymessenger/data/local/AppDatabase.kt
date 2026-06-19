@@ -11,7 +11,7 @@ import com.example.mymessenger.data.local.entities.LocalMessageEntity
 
 @Database(
     entities = [ChatKeyEntity::class, LocalMessageEntity::class, ContactEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

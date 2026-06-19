@@ -5,5 +5,7 @@ data class MessageDocument(
     val chatId: String = "",
     val senderId: String = "",
     val encryptedText: String = "",
-    val timestamp: Long = 0L
+    val timestamp: Long = 0L,
+    val isDelivered: Boolean = false,
+    val isRead: Boolean = false
 )

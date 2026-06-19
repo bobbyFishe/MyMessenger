@@ -1,6 +1,5 @@
 package com.example.mymessenger.ui.screens
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,7 +39,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.mymessenger.R
 import com.example.mymessenger.ui.viewmodel.ChatDetailUiState
 import com.example.mymessenger.ui.viewmodel.ChatDetailViewModel
@@ -56,17 +54,37 @@ fun ChatDetailScreen(
     val uiState by viewModel.uiState.collectAsState()
     val messageText by viewModel.messageText.collectAsState()
 
+    val myId = remember { FirebaseAuth.getInstance().currentUser?.uid ?: "" }
+
     LaunchedEffect(chatId) {
         viewModel.initChat(chatId)
     }
+
+    LaunchedEffect(uiState) {
+        if (uiState is ChatDetailUiState.Success) {
+            val messages = (uiState as ChatDetailUiState.Success).messages
+            val unreadMessages = messages.filter {
+                it.senderId != myId && !it.isRead
+            }
+            if (unreadMessages.isNotEmpty()) {
+                android.util.Log.d("ChatDetailScreen", "📖 Marking ${unreadMessages.size} messages as read")
+                unreadMessages.forEach { message ->
+                    viewModel.markMessageAsRead(message.id)
+                }
+            }
+        }
+    }
+
     DisposableEffect(Unit) {
         viewModel.onResume()
         onDispose { }
     }
+
     ChatDetailContent(
         chatId = chatId,
         uiState = uiState,
         messageText = messageText,
+        myId = myId,
         onMessageTextChange = { viewModel.updateMessageText(it) },
         onSendClick = { viewModel.sendMessage() },
         onBackClick = onBackClick
@@ -79,11 +97,11 @@ fun ChatDetailContent(
     chatId: String,
     uiState: ChatDetailUiState,
     messageText: String,
+    myId: String,
     onMessageTextChange: (String) -> Unit,
     onSendClick: () -> Unit,
     onBackClick: () -> Unit
 ) {
-    val myId = remember { FirebaseAuth.getInstance().currentUser?.uid ?: "" }
     val lazyListState = rememberLazyListState()
 
     if (uiState is ChatDetailUiState.Success && uiState.messages.isNotEmpty()) {
@@ -137,32 +155,14 @@ fun ChatDetailContent(
                                 val msg = uiState.messages[index]
                                 val isMyMessage = msg.senderId == myId
 
-
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = if (isMyMessage) Arrangement.End else Arrangement.Start
                                 ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .background(
-                                                color = if (isMyMessage) MaterialTheme.colorScheme.primaryContainer
-                                                else MaterialTheme.colorScheme.secondaryContainer,
-                                                shape = RoundedCornerShape(
-                                                    topStart = 12.dp,
-                                                    topEnd = 12.dp,
-                                                    bottomStart = if (isMyMessage) 12.dp else 0.dp,
-                                                    bottomEnd = if (isMyMessage) 0.dp else 12.dp
-                                                )
-                                            )
-                                            .padding(horizontal = 12.dp, vertical = 8.dp)
-                                    ) {
-                                        Text(
-                                            text = msg.text,
-                                            style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp),
-                                            color = if (isMyMessage) MaterialTheme.colorScheme.onPrimaryContainer
-                                            else MaterialTheme.colorScheme.onSecondaryContainer
-                                        )
-                                    }
+                                    MessageBubble(
+                                        message = msg,
+                                        isMyMessage = isMyMessage
+                                    )
                                 }
                             }
                         }

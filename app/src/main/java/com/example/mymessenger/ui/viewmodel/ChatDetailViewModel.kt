@@ -5,11 +5,13 @@ import androidx.lifecycle.viewModelScope
 import com.example.mymessenger.R
 import com.example.mymessenger.data.local.entities.LocalMessageEntity
 import com.example.mymessenger.domain.repository.ChatRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 sealed interface ChatDetailUiState {
     object Loading : ChatDetailUiState
@@ -35,6 +37,14 @@ class ChatDetailViewModel(
             chatRepository.forceSync(chatId)
         }
     }
+
+    // В ChatDetailViewModel
+    fun onMessageSeen(messageId: String) {
+        viewModelScope.launch {
+            chatRepository.markMessageAsRead(messageId)
+        }
+    }
+
     fun initChat(chatId: String) {
         if (currentChatId == chatId) return
         currentChatId = chatId
@@ -47,9 +57,6 @@ class ChatDetailViewModel(
                 }
         }
     }
-
-
-
 
     fun updateMessageText(newText: String) {
         _messageText.value = newText
@@ -71,6 +78,18 @@ class ChatDetailViewModel(
                     // В будущем тут можно показать Снэкбар "Не удалось отправить"
                 }
             )
+        }
+    }
+
+    fun markMessageAsRead(messageId: String) {
+        viewModelScope.launch {
+            chatRepository.markMessageAsRead(messageId)
+                .onSuccess {
+                    android.util.Log.d("ChatDetailVM", "✅ Message marked as read: $messageId")
+                }
+                .onFailure { e ->
+                    android.util.Log.e("ChatDetailVM", "❌ Failed to mark as read", e)
+                }
         }
     }
 
