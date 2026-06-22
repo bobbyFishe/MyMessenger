@@ -69,15 +69,14 @@ class MainViewModel(
                             .collect { chatsList ->
                                 android.util.Log.d("MainViewModel", "📋 Chats updated: ${chatsList.size}")
 
-                                // ✅ 1. ОТПРАВЛЯЕМ ВСЕ НЕОТПРАВЛЕННЫЕ СООБЩЕНИЯ
+                                // ✅ 1. Завершаем handshake
                                 chatsList.forEach { chatDoc ->
                                     viewModelScope.launch {
                                         userRepository.completeCryptoHandshake(chatDoc)
-                                        chatRepository.flushUnsentMessages(chatDoc.id)
                                     }
                                 }
 
-                                // ✅ 2. Загружаем имена всех собеседников за 1 запрос
+                                // ✅ 2. Загружаем имена собеседников
                                 val peerIds = chatsList.mapNotNull { chatDoc ->
                                     chatDoc.participantIds.firstOrNull { it != userData.uid }
                                 }.distinct()
@@ -89,33 +88,37 @@ class MainViewModel(
                                             users.forEach { user ->
                                                 nameCache[user.uid] = user.name
                                             }
-                                            android.util.Log.d("MainViewModel", "✅ Loaded ${users.size} peer names in 1 query")
                                         }
                                     }
                                 }
 
-                                // ✅ 3. Запускаем engine для новых чатов
-                                val currentChatIds = (uiState.value as? MainUiState.Success)?.chats?.map { it.id } ?: emptyList()
+                                // ✅ 3. Запускаем engine ДЛЯ ВСЕХ чатов (включая уже существующие)
                                 chatsList.forEach { chatDoc ->
-                                    if (!currentChatIds.contains(chatDoc.id)) {
-                                        viewModelScope.launch {
-                                            android.util.Log.d("MainViewModel", "🚀 Starting P2P engine for: ${chatDoc.id}")
-                                            chatRepository.startP2PDeliveryEngine(chatDoc.id)
-                                                .catch { e ->
-                                                    android.util.Log.e("MainViewModel", "❌ Engine error for ${chatDoc.id}", e)
-                                                }
-                                                .collect {
-                                                    android.util.Log.d("MainViewModel", "✅ Engine emitted for ${chatDoc.id}")
-                                                }
-                                        }
+                                    viewModelScope.launch {
+                                        android.util.Log.d("MainViewModel", "🚀 Starting engine for: ${chatDoc.id}")
+                                        chatRepository.startP2PDeliveryEngine(chatDoc.id)
+                                            .catch { e ->
+                                                android.util.Log.e("MainViewModel", "❌ Engine error", e)
+                                            }
+                                            .collect {
+                                                // Engine работает
+                                            }
                                     }
                                 }
 
+                                // ✅ 4. Обновляем UI
                                 _uiState.update { currentState ->
                                     if (currentState is MainUiState.Success) {
                                         currentState.copy(chats = chatsList)
                                     } else {
                                         currentState
+                                    }
+                                }
+
+                                // ✅ 5. Доставляем все неотправленные (на случай, если engine не успел)
+                                viewModelScope.launch {
+                                    chatsList.forEach { chatDoc ->
+                                        chatRepository.flushUnsentMessages(chatDoc.id)
                                     }
                                 }
                             }

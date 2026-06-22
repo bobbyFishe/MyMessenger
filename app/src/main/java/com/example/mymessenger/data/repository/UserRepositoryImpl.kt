@@ -90,6 +90,8 @@ class UserRepositoryImpl(
         }
     }
 
+    // UserRepositoryImpl.kt
+
     override suspend fun createEncryptedChat(
         peerId: String,
         peerPublicKey: String?
@@ -110,24 +112,43 @@ class UserRepositoryImpl(
             val chatId = idList.joinToString("_")
             android.util.Log.d("UserRepository", "🔐 chatId=$chatId")
 
-            // ✅ Проверяем чат в Firestore
-            android.util.Log.d("UserRepository", "🔐 Checking chat in Firestore...")
+            // ✅ 1. Сначала проверяем Room (0 запросов в Firestore!)
+            val hasLocalKey = chatKeyDao.getKeyForChat(chatId) != null
+
+            // ✅ 2. Проверяем, есть ли чат в локальном кеше
+            val hasLocalChat = chatDao.getChatById(chatId) != null
+
+            if (hasLocalKey && hasLocalChat) {
+                android.util.Log.d("UserRepository", "⏭️ Chat already exists locally")
+                return Result.success(Unit)
+            }
+
+            // ✅ 3. Если нет в кеше - проверяем Firestore (1 запрос)
+            // Но делаем это ТОЛЬКО если нет локальных данных!
             val chatSnapshot = firestore.collection("chats")
                 .document(chatId)
                 .get()
                 .await()
-            android.util.Log.d("UserRepository", "🔐 chatExists=${chatSnapshot.exists()}")
 
-            val chatExists = chatSnapshot.exists()
-            val hasLocalKey = chatKeyDao.getKeyForChat(chatId) != null
-            android.util.Log.d("UserRepository", "🔐 hasLocalKey=$hasLocalKey")
-
-            if (chatExists && hasLocalKey) {
-                android.util.Log.d("UserRepository", "⏭️ Chat already exists")
+            if (chatSnapshot.exists()) {
+                android.util.Log.d("UserRepository", "⏭️ Chat exists in Firestore, syncing...")
+                // Сохраняем в кеш
+                val chatDoc = chatSnapshot.toObject(ChatDocument::class.java)
+                chatDoc?.let {
+                    chatDao.saveChat(
+                        ChatEntity(
+                            id = it.id,
+                            participantIds = it.participantIds,
+                            publicKeyUserA = it.publicKeyUserA,
+                            publicKeyUserB = it.publicKeyUserB,
+                            createdAt = it.createdAt
+                        )
+                    )
+                }
                 return Result.success(Unit)
             }
 
-            // ✅ Генерируем ключи
+            // ✅ 4. Чат не существует - создаем новый
             android.util.Log.d("UserRepository", "🔑 Generating RSA keys...")
             val kpg = KeyPairGenerator.getInstance("RSA")
             kpg.initialize(2048)
@@ -135,20 +156,16 @@ class UserRepositoryImpl(
 
             val myPublicKeyString = Base64.encodeToString(kp.public.encoded, Base64.NO_WRAP)
             val myPrivateKeyString = Base64.encodeToString(kp.private.encoded, Base64.NO_WRAP)
-            android.util.Log.d("UserRepository", "🔑 Keys generated")
 
-            android.util.Log.d("UserRepository", "💾 Saving private key to Room...")
+            // ✅ Сохраняем в Room СРАЗУ (до записи в Firestore)
             chatKeyDao.saveKey(
                 ChatKeyEntity(
                     chatId = chatId,
                     privateKey = myPrivateKeyString
                 )
             )
-            android.util.Log.d("UserRepository", "✅ Private key saved")
 
             val isUserA = myId == idList[0]
-            android.util.Log.d("UserRepository", "🔐 isUserA=$isUserA")
-
             val chatDoc = ChatDocument(
                 id = chatId,
                 participantIds = idList,
@@ -157,7 +174,18 @@ class UserRepositoryImpl(
                 createdAt = System.currentTimeMillis()
             )
 
-            android.util.Log.d("UserRepository", "📤 Saving chat to Firestore: participantIds=${chatDoc.participantIds}")
+            // ✅ Сохраняем в Room кеш
+            chatDao.saveChat(
+                ChatEntity(
+                    id = chatDoc.id,
+                    participantIds = chatDoc.participantIds,
+                    publicKeyUserA = chatDoc.publicKeyUserA,
+                    publicKeyUserB = chatDoc.publicKeyUserB,
+                    createdAt = chatDoc.createdAt
+                )
+            )
+
+            // ✅ Записываем в Firestore (1 запись)
             firestore.collection("chats")
                 .document(chatId)
                 .set(chatDoc)
@@ -373,7 +401,6 @@ class UserRepositoryImpl(
                     doc.toObject(User::class.java)
                 }
 
-                // ✅ Сохраняем в Room (кеш) — nameCache здесь не используем
                 users.forEach { user ->
                     contactDao.saveContact(
                         ContactEntity(

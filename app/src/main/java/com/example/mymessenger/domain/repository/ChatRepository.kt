@@ -12,4 +12,6 @@ interface ChatRepository {
     fun startP2PDeliveryEngine(chatId: String): Flow<Unit>
     suspend fun forceSync(chatId: String): Result<Unit>
     suspend fun markMessageAsRead(messageId: String): Result<Unit>
+    suspend fun getMessagesSync(chatId: String): List<LocalMessageEntity>
+    suspend fun getLastMessagesSync(chatId: String, limit: Int): List<LocalMessageEntity>
 }

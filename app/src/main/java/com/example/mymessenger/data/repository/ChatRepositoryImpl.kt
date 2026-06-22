@@ -1,3 +1,4 @@
+// data/repository/ChatRepositoryImpl.kt
 package com.example.mymessenger.data.repository
 
 import com.example.mymessenger.data.local.dao.ChatKeyDao
@@ -10,10 +11,13 @@ import com.example.mymessenger.domain.repository.UserRepository
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.ProducerScope
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
@@ -23,16 +27,18 @@ class ChatRepositoryImpl(
     private val messageDao: MessageDao,
     private val chatKeyDao: ChatKeyDao,
     private val userRepository: UserRepository
-
 ) : ChatRepository {
+
+    private val activeEngines = mutableSetOf<String>()
 
     override suspend fun sendMessage(chatId: String, text: String): Result<Unit> {
         return withContext(Dispatchers.IO) {
             try {
-                android.util.Log.d("ChatRepository", "📝 sendMessage START: chatId=$chatId, text=$text")
+                android.util.Log.d("ChatRepository", "📝 sendMessage: chatId=$chatId")
 
                 val myId = FirebaseAuth.getInstance().currentUser?.uid
                     ?: return@withContext Result.failure(Exception("NO_SESSION"))
+
                 val uids = chatId.split("_")
                 val isSelfChat = uids.size >= 2 && uids[0] == uids[1]
 
@@ -42,8 +48,7 @@ class ChatRepositoryImpl(
                     .document()
                     .id
 
-                android.util.Log.d("ChatRepository", "📝 messageId=$messageId")
-
+                // ✅ Сохраняем в Room
                 messageDao.insertMessage(
                     LocalMessageEntity(
                         id = messageId,
@@ -57,11 +62,10 @@ class ChatRepositoryImpl(
                     )
                 )
 
-                android.util.Log.d("ChatRepository", "✅ Message saved to Room")
-
                 if (!isSelfChat) {
-                    android.util.Log.d("ChatRepository", "⚡ Calling flushUnsentMessages")
-                    flushUnsentMessages(chatId)
+                    CoroutineScope(Dispatchers.IO).launch {
+                        deliverMessageToFirestore(chatId, messageId)
+                    }
                 } else {
                     messageDao.markAsSent(messageId)
                     messageDao.markAsDelivered(messageId)
@@ -76,11 +80,64 @@ class ChatRepositoryImpl(
         }
     }
 
+    private suspend fun deliverMessageToFirestore(chatId: String, messageId: String) {
+        try {
+            android.util.Log.d("ChatRepository", "📤 deliverMessage: $messageId")
+
+            val myId = FirebaseAuth.getInstance().currentUser?.uid ?: return
+            val uids = chatId.split("_")
+            val peerId = uids.firstOrNull { it != myId } ?: return
+
+            val peerPublicKey = getPeerPublicKey(chatId, myId, uids)
+            if (peerPublicKey.isEmpty()) {
+                android.util.Log.e("ChatRepository", "❌ No peer public key")
+                return
+            }
+
+            val localMessage = messageDao.getMessageById(messageId) ?: return
+            val encryptedText = CryptoManager.encrypt(localMessage.text, peerPublicKey)
+
+            val msgDoc = MessageDocument(
+                id = messageId,
+                chatId = chatId,
+                senderId = myId,
+                encryptedText = encryptedText,
+                timestamp = localMessage.timestamp,
+                isDelivered = false,
+                isRead = false
+            )
+
+            firestore.collection("chats")
+                .document(chatId)
+                .collection("messages")
+                .document(messageId)
+                .set(msgDoc)
+                .await()
+
+            // ✅ Статус "Отправлено" (в Firestore записано)
+            messageDao.markAsSent(messageId)
+            android.util.Log.d("ChatRepository", "✅ Message sent to Firestore: $messageId")
+
+            // ✅ Пытаемся доставить сразу (если собеседник онлайн)
+            deliverAllUndeliveredMessages(chatId)
+
+        } catch (e: Exception) {
+            android.util.Log.e("ChatRepository", "❌ deliverMessage error", e)
+        }
+    }
+
     override fun startP2PDeliveryEngine(chatId: String): Flow<Unit> = callbackFlow {
+        if (activeEngines.contains(chatId)) {
+            android.util.Log.d("ChatRepository", "⏭️ Engine already running for: $chatId")
+            close()
+            return@callbackFlow
+        }
+        activeEngines.add(chatId)
+
         android.util.Log.d("ChatRepository", "🚀 startP2PDeliveryEngine: $chatId")
 
         val myId = FirebaseAuth.getInstance().currentUser?.uid ?: run {
-            android.util.Log.e("ChatRepository", "❌ No user")
+            activeEngines.remove(chatId)
             close()
             return@callbackFlow
         }
@@ -88,231 +145,325 @@ class ChatRepositoryImpl(
         val uids = chatId.split("_")
         if (uids.size < 2 || uids[0] == uids[1]) {
             android.util.Log.d("ChatRepository", "⚠️ Self chat, skip")
+            activeEngines.remove(chatId)
             close()
             return@callbackFlow
         }
 
         val peerId = uids.firstOrNull { it != myId } ?: run {
-            android.util.Log.e("ChatRepository", "❌ No peer")
+            activeEngines.remove(chatId)
             close()
             return@callbackFlow
         }
 
         android.util.Log.d("ChatRepository", "✅ My ID: $myId, Peer: $peerId")
 
-        // ⚡ Сразу отправляем все неотправленные при запуске
+        val channel = this
+
+        // ⚡ Доставляем все недоставленные при запуске
         launch(Dispatchers.IO) {
-            android.util.Log.d("ChatRepository", "⚡ Initial flush")
-            flushUnsentMessages(chatId)
+            deliverAllUndeliveredMessages(chatId)
         }
 
         // ============================================================
-        // 1️⃣ КАНАЛ: Отправка неотправленных сообщений
+        // 1️⃣ КАНАЛ: Доставка НЕДОСТАВЛЕННЫХ сообщений
         // ============================================================
-        val unsentJob = launch(Dispatchers.IO) {
-            android.util.Log.d("ChatRepository", "📡 Subscribing to unsent messages")
-
-            messageDao.getUnsentMessagesFlow(chatId).collect { unsentList ->
-                android.util.Log.d("ChatRepository", "📨 Unsent messages: ${unsentList.size}")
-
-                if (unsentList.isNotEmpty()) {
-                    try {
-                        val peerSnapshot = firestore.collection("users")
-                            .document(peerId)
-                            .get()
-                            .await()
-                        val isPeerOnline = peerSnapshot.getBoolean("isOnline") ?: false
-
-                        android.util.Log.d("ChatRepository", "🌐 Peer online: $isPeerOnline")
-
-                        if (isPeerOnline) {
-                            val chatSnapshot = firestore.collection("chats")
-                                .document(chatId)
-                                .get()
-                                .await()
-
-                            if (!chatSnapshot.exists()) {
-                                android.util.Log.e("ChatRepository", "❌ Chat document missing: $chatId")
-                                return@collect
-                            }
-
-                            val isUserA = myId == uids[0]
-                            val peerPublicKey = if (isUserA) {
-                                chatSnapshot.getString("publicKeyUserB") ?: ""
-                            } else {
-                                chatSnapshot.getString("publicKeyUserA") ?: ""
-                            }
-
-                            if (peerPublicKey.isNotEmpty()) {
-                                unsentList.forEach { localMsg ->
-                                    try {
-                                        android.util.Log.d("ChatRepository", "📤 Sending message: ${localMsg.id}")
-
-                                        val encryptedText = CryptoManager.encrypt(localMsg.text, peerPublicKey)
-
-                                        val msgDoc = MessageDocument(
-                                            id = localMsg.id,
-                                            chatId = chatId,
-                                            senderId = myId,
-                                            encryptedText = encryptedText,
-                                            timestamp = localMsg.timestamp,
-                                            isDelivered = false,
-                                            isRead = false
-                                        )
-
-                                        firestore.collection("chats")
-                                            .document(chatId)
-                                            .collection("messages")
-                                            .document(localMsg.id)
-                                            .set(msgDoc)
-                                            .await()
-
-                                        messageDao.markAsSent(localMsg.id)
-                                        android.util.Log.d("ChatRepository", "✅ Message sent: ${localMsg.id}")
-                                        trySend(Unit)
-                                    } catch (e: Exception) {
-                                        android.util.Log.e("ChatRepository", "❌ Failed to send message: ${localMsg.id}", e)
-                                    }
-                                }
-                            } else {
-                                android.util.Log.e("ChatRepository", "❌ Peer public key is empty!")
-                            }
-                        }
-                    } catch (e: Exception) {
-                        android.util.Log.e("ChatRepository", "❌ Error in unsent flow", e)
+        val undeliveredJob = launch(Dispatchers.IO) {
+            messageDao.getUndeliveredMessagesFlow(chatId)
+                .catch { e ->
+                    android.util.Log.e("ChatRepository", "❌ Undelivered flow error", e)
+                }
+                .collect { undeliveredList ->
+                    if (undeliveredList.isNotEmpty()) {
+                        android.util.Log.d("ChatRepository", "📨 Undelivered: ${undeliveredList.size}")
+                        checkAndDeliver(chatId, peerId)
                     }
                 }
-            }
         }
 
         // ============================================================
-        // 2️⃣ КАНАЛ: Входящие сообщения + статусы
+        // 2️⃣ КАНАЛ: Входящие сообщения
         // ============================================================
         val inboundListener = firestore.collection("chats")
             .document(chatId)
             .collection("messages")
             .addSnapshotListener { snapshot, error ->
                 if (error != null || snapshot == null) {
-                    android.util.Log.e("ChatRepository", "❌ Inbound listener error", error)
+                    android.util.Log.e("ChatRepository", "❌ Inbound error", error)
                     return@addSnapshotListener
                 }
-
-                android.util.Log.d("ChatRepository", "📥 Inbound changes: ${snapshot.documentChanges.size}")
 
                 snapshot.documentChanges.forEach { change ->
                     when (change.type) {
                         DocumentChange.Type.ADDED -> {
                             val doc = change.document
-                            android.util.Log.d("ChatRepository", "📥 New message: ${doc.id}")
-
                             launch(Dispatchers.IO) {
-                                try {
-                                    val keyEntity = chatKeyDao.getKeyForChat(chatId)
-                                    if (keyEntity == null) {
-                                        android.util.Log.e("ChatRepository", "❌ No private key for: $chatId")
-                                        return@launch
-                                    }
-
-                                    val remoteMsg = doc.toObject(MessageDocument::class.java)
-                                    if (remoteMsg == null) {
-                                        android.util.Log.e("ChatRepository", "❌ Failed to parse message")
-                                        return@launch
-                                    }
-
-                                    if (remoteMsg.senderId != myId) {
-                                        android.util.Log.d("ChatRepository", "🔓 Decrypting message from: ${remoteMsg.senderId}")
-
-                                        val decryptedText = CryptoManager.decrypt(
-                                            remoteMsg.encryptedText,
-                                            keyEntity.privateKey
-                                        )
-
-                                        messageDao.insertMessage(
-                                            LocalMessageEntity(
-                                                id = remoteMsg.id,
-                                                chatId = chatId,
-                                                senderId = remoteMsg.senderId,
-                                                text = decryptedText,
-                                                timestamp = remoteMsg.timestamp,
-                                                isSent = true,
-                                                isDelivered = true,
-                                                isRead = false
-                                            )
-                                        )
-                                        android.util.Log.d("ChatRepository", "💾 Message saved to Room: ${remoteMsg.id}")
-
-                                        // Обновляем статус доставки
-                                        doc.reference.update("isDelivered", true).await()
-                                        android.util.Log.d("ChatRepository", "📤 Delivery confirmation sent")
-
-                                        // Удаляем из транзитной коллекции
-                                        doc.reference.delete().await()
-                                        android.util.Log.d("ChatRepository", "🗑️ Message deleted from transit")
-
-                                        trySend(Unit)
-                                    } else {
-                                        android.util.Log.d("ChatRepository", "⏭️ Skipping my own message: ${remoteMsg.id}")
-                                        doc.reference.delete().await()
-                                    }
-                                } catch (e: Exception) {
-                                    android.util.Log.e("ChatRepository", "❌ Inbound process error", e)
-                                }
+                                processIncomingMessage(channel, doc, chatId, myId, peerId)
+                            }
+                        }
+                        DocumentChange.Type.MODIFIED -> {
+                            val doc = change.document
+                            launch(Dispatchers.IO) {
+                                processModifiedMessage(doc, myId)
                             }
                         }
                         DocumentChange.Type.REMOVED -> {
                             android.util.Log.d("ChatRepository", "🗑️ Message removed: ${change.document.id}")
                         }
-                        DocumentChange.Type.MODIFIED -> {
-                            val doc = change.document
-                            launch(Dispatchers.IO) {
-                                try {
-                                    val isDelivered = doc.getBoolean("isDelivered") ?: false
-                                    val isRead = doc.getBoolean("isRead") ?: false
-
-                                    val remoteMsg = doc.toObject(MessageDocument::class.java)
-                                    if (remoteMsg?.senderId == myId) {
-                                        if (isDelivered) {
-                                            android.util.Log.d("ChatRepository", "✅ My message delivered: ${doc.id}")
-                                            messageDao.markAsDelivered(doc.id)
-                                        }
-                                        if (isRead) {
-                                            android.util.Log.d("ChatRepository", "✅ My message read: ${doc.id}")
-                                            messageDao.markAsRead(doc.id)
-                                        }
-                                    }
-                                } catch (e: Exception) {
-                                    android.util.Log.e("ChatRepository", "❌ Status update error", e)
-                                }
-                            }
-                        }
                     }
                 }
             }
 
         // ============================================================
-        // 3️⃣ КАНАЛ: Статус онлайн собеседника (НУЖЕН ДЛЯ ОФФЛАЙН-СООБЩЕНИЙ!)
+        // 3️⃣ КАНАЛ: Статус онлайн собеседника
         // ============================================================
         val statusListener = firestore.collection("users")
             .document(peerId)
             .addSnapshotListener { snapshot, _ ->
                 val isOnline = snapshot?.getBoolean("isOnline") ?: false
-                android.util.Log.d("ChatRepository", "👤 Peer online changed: $isOnline")
+                android.util.Log.d("ChatRepository", "👤 Peer online: $isOnline")
 
                 if (isOnline) {
                     launch(Dispatchers.IO) {
-                        android.util.Log.d("ChatRepository", "⚡ Peer came online, flushing unsent")
-                        flushUnsentMessages(chatId)
+                        android.util.Log.d("ChatRepository", "⚡ Peer online, delivering")
+                        deliverAllUndeliveredMessages(chatId)
                     }
                 }
             }
 
         awaitClose {
-            android.util.Log.d("ChatRepository", "🛑 Closing engine for: $chatId")
-            unsentJob.cancel()
+            android.util.Log.d("ChatRepository", "🛑 Closing engine: $chatId")
+            activeEngines.remove(chatId)
+            undeliveredJob.cancel()
             inboundListener.remove()
             statusListener.remove()
         }
     }
+
+    // ============================================================
+    // ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
+    // ============================================================
+
+    private suspend fun checkAndDeliver(chatId: String, peerId: String) {
+        try {
+            val peerSnapshot = firestore.collection("users")
+                .document(peerId)
+                .get()
+                .await()
+            val isPeerOnline = peerSnapshot.getBoolean("isOnline") ?: false
+
+            if (isPeerOnline) {
+                deliverAllUndeliveredMessages(chatId)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ChatRepository", "❌ checkAndDeliver error", e)
+        }
+    }
+
+    // ============================================================
+    // ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ ВХОДЯЩИХ СООБЩЕНИЙ
+    // ============================================================
+
+    private suspend fun processIncomingMessage(
+        channel: ProducerScope<Unit>,
+        doc: com.google.firebase.firestore.DocumentSnapshot,
+        chatId: String,
+        myId: String,
+        peerId: String
+    ) {
+        try {
+            val remoteMsg = doc.toObject(MessageDocument::class.java) ?: return
+
+            android.util.Log.d("ChatRepository", "📥 processIncoming: ${remoteMsg.id}, sender=${remoteMsg.senderId}, isDelivered=${remoteMsg.isDelivered}, isRead=${remoteMsg.isRead}")
+
+            // ✅ Если это моё сообщение
+            if (remoteMsg.senderId == myId) {
+                android.util.Log.d("ChatRepository", "⏭️ My message: ${remoteMsg.id}")
+
+                // ✅ Если сообщение ещё не доставлено - помечаем как доставленное
+                if (!remoteMsg.isDelivered) {
+                    doc.reference.update("isDelivered", true).await()
+                    messageDao.markAsDelivered(remoteMsg.id)
+                    android.util.Log.d("ChatRepository", "✅ My message delivered: ${remoteMsg.id}")
+                }
+
+                // ✅ Если сообщение уже прочитано - обновляем статус и удаляем
+                if (remoteMsg.isRead) {
+                    messageDao.markAsRead(remoteMsg.id)
+                    doc.reference.delete().await()
+                    android.util.Log.d("ChatRepository", "🗑️ My message deleted after read: ${remoteMsg.id}")
+                }
+                return
+            }
+
+            // ✅ Сообщение от собеседника
+            val keyEntity = chatKeyDao.getKeyForChat(chatId)
+            if (keyEntity == null) {
+                android.util.Log.e("ChatRepository", "❌ No private key for chat: $chatId")
+                return
+            }
+
+            // ✅ Расшифровываем
+            val decryptedText = CryptoManager.decrypt(
+                remoteMsg.encryptedText,
+                keyEntity.privateKey
+            )
+
+            // ✅ Проверяем, есть ли уже такое сообщение в Room
+            val existing = messageDao.getMessageById(remoteMsg.id)
+            if (existing == null) {
+                messageDao.insertMessage(
+                    LocalMessageEntity(
+                        id = remoteMsg.id,
+                        chatId = chatId,
+                        senderId = remoteMsg.senderId,
+                        text = decryptedText,
+                        timestamp = remoteMsg.timestamp,
+                        isSent = true,
+                        isDelivered = true,  // ✅ Получено и расшифровано
+                        isRead = false
+                    )
+                )
+                android.util.Log.d("ChatRepository", "💾 New message saved: ${remoteMsg.id}")
+            }
+
+            // ✅ Отправляем подтверждение доставки
+            doc.reference.update("isDelivered", true).await()
+            android.util.Log.d("ChatRepository", "📤 Delivery confirmation sent for: ${remoteMsg.id}")
+
+            // ✅ НЕ УДАЛЯЕМ сообщение из Firestore!
+            // Оно остаётся до тех пор, пока не будет прочитано
+            // Отправитель увидит isDelivered=true и isRead=false
+
+            // ✅ Отправляем сигнал об обновлении
+            channel.trySend(Unit)
+
+        } catch (e: Exception) {
+            android.util.Log.e("ChatRepository", "❌ processIncoming error", e)
+        }
+    }
+
+    private suspend fun processModifiedMessage(
+        doc: com.google.firebase.firestore.DocumentSnapshot,
+        myId: String
+    ) {
+        try {
+            val isDelivered = doc.getBoolean("isDelivered") ?: false
+            val isRead = doc.getBoolean("isRead") ?: false
+
+            val remoteMsg = doc.toObject(MessageDocument::class.java)
+            if (remoteMsg?.senderId == myId) {
+                android.util.Log.d("ChatRepository", "📥 processModified: ${doc.id}, isDelivered=$isDelivered, isRead=$isRead")
+
+                if (isDelivered) {
+                    messageDao.markAsDelivered(doc.id)
+                    android.util.Log.d("ChatRepository", "✅ My message delivered: ${doc.id}")
+                }
+
+                if (isRead) {
+                    messageDao.markAsRead(doc.id)
+                    android.util.Log.d("ChatRepository", "✅ My message read: ${doc.id}")
+
+                    // ✅ Теперь можно удалить из Firestore (оба участника подтвердили прочтение)
+                    doc.reference.delete().await()
+                    android.util.Log.d("ChatRepository", "🗑️ Message deleted after read confirmation: ${doc.id}")
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ChatRepository", "❌ processModified error", e)
+        }
+    }
+
+    // ============================================================
+    // ДОСТАВКА НЕДОСТАВЛЕННЫХ СООБЩЕНИЙ
+    // ============================================================
+
+    private suspend fun deliverAllUndeliveredMessages(chatId: String) {
+        try {
+            android.util.Log.d("ChatRepository", "📤 deliverAllUndelivered: $chatId")
+
+            val myId = FirebaseAuth.getInstance().currentUser?.uid ?: return
+            val uids = chatId.split("_")
+            val peerId = uids.firstOrNull { it != myId } ?: return
+
+            // ✅ Получаем НЕДОСТАВЛЕННЫЕ сообщения (isSent = true, isDelivered = false)
+            val undelivered = messageDao.getUndeliveredMessages(chatId)
+
+            if (undelivered.isEmpty()) {
+                android.util.Log.d("ChatRepository", "📭 No undelivered messages")
+                return
+            }
+
+            android.util.Log.d("ChatRepository", "📨 Undelivered: ${undelivered.size}")
+
+            // ✅ Проверяем онлайн
+            val peerSnapshot = firestore.collection("users")
+                .document(peerId)
+                .get()
+                .await()
+            val isPeerOnline = peerSnapshot.getBoolean("isOnline") ?: false
+
+            if (!isPeerOnline) {
+                android.util.Log.d("ChatRepository", "⏳ Peer offline, keeping undelivered")
+                return
+            }
+
+            android.util.Log.d("ChatRepository", "✅ Peer online, delivering ${undelivered.size} messages")
+
+            // ✅ Доставляем все недоставленные
+            undelivered.forEach { localMsg ->
+                try {
+                    val docSnapshot = firestore.collection("chats")
+                        .document(chatId)
+                        .collection("messages")
+                        .document(localMsg.id)
+                        .get()
+                        .await()
+
+                    if (docSnapshot.exists()) {
+                        // ✅ Обновляем статус в Firestore
+                        docSnapshot.reference.update("isDelivered", true).await()
+                        android.util.Log.d("ChatRepository", "✅ Delivered: ${localMsg.id}")
+                    } else {
+                        // ❌ Сообщение пропало из Firestore — переотправляем
+                        android.util.Log.w("ChatRepository", "⚠️ Message not in Firestore, resending: ${localMsg.id}")
+                        deliverMessageToFirestore(chatId, localMsg.id)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("ChatRepository", "❌ Failed to deliver: ${localMsg.id}", e)
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ChatRepository", "❌ deliverAllUndelivered error", e)
+        }
+    }
+
+    // ============================================================
+    // ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
+    // ============================================================
+
+    private suspend fun getPeerPublicKey(chatId: String, myId: String, uids: List<String>): String {
+        return userRepository.getCachedPeerPublicKey(chatId, myId)
+            ?: run {
+                val chatSnapshot = firestore.collection("chats")
+                    .document(chatId)
+                    .get()
+                    .await()
+
+                if (!chatSnapshot.exists()) return ""
+
+                val isUserA = myId == uids[0]
+                if (isUserA) {
+                    chatSnapshot.getString("publicKeyUserB") ?: ""
+                } else {
+                    chatSnapshot.getString("publicKeyUserA") ?: ""
+                }
+            }
+    }
+
+    // ============================================================
+    // ПУБЛИЧНЫЕ МЕТОДЫ
+    // ============================================================
 
     override suspend fun markMessageAsRead(messageId: String): Result<Unit> {
         return withContext(Dispatchers.IO) {
@@ -323,21 +474,34 @@ class ChatRepositoryImpl(
                     return@withContext Result.failure(Exception("Message not found"))
                 }
 
+                // ✅ Обновляем в Room
                 messageDao.markAsRead(messageId)
-                android.util.Log.d("ChatRepository", "✅ Message marked as read in Room: $messageId")
+                android.util.Log.d("ChatRepository", "✅ Marked as read in Room: $messageId")
 
-                // ✅ Отправляем подтверждение прочтения прямо в коллекцию messages
-                firestore.collection("chats")
+                // ✅ Обновляем в Firestore
+                val docRef = firestore.collection("chats")
                     .document(message.chatId)
                     .collection("messages")
                     .document(messageId)
-                    .update("isRead", true)
-                    .await()
-                android.util.Log.d("ChatRepository", "📤 Read confirmation sent to Firestore")
+
+                // ✅ Проверяем, существует ли документ
+                val snapshot = docRef.get().await()
+                if (snapshot.exists()) {
+                    // ✅ Обновляем статус
+                    docRef.update("isRead", true).await()
+                    android.util.Log.d("ChatRepository", "📤 Read confirmation sent to Firestore: $messageId")
+
+                    // ✅ Отправитель увидит MODIFIED и удалит документ
+                    // ✅ Получатель тоже удаляет документ (у себя)
+                    docRef.delete().await()
+                    android.util.Log.d("ChatRepository", "🗑️ Message deleted from receiver: $messageId")
+                } else {
+                    android.util.Log.d("ChatRepository", "⏭️ Message already deleted from Firestore: $messageId")
+                }
 
                 Result.success(Unit)
             } catch (e: Exception) {
-                android.util.Log.e("ChatRepository", "❌ Error marking message as read", e)
+                android.util.Log.e("ChatRepository", "❌ markMessageAsRead error", e)
                 Result.failure(e)
             }
         }
@@ -347,7 +511,7 @@ class ChatRepositoryImpl(
         return withContext(Dispatchers.IO) {
             try {
                 android.util.Log.d("ChatRepository", "🔄 Force sync: $chatId")
-                flushUnsentMessages(chatId)
+                deliverAllUndeliveredMessages(chatId)
                 Result.success(Unit)
             } catch (e: Exception) {
                 Result.failure(e)
@@ -358,154 +522,18 @@ class ChatRepositoryImpl(
     override suspend fun flushUnsentMessages(chatId: String): Result<Unit> {
         return withContext(Dispatchers.IO) {
             try {
-                android.util.Log.d("ChatRepository", "🔄 Flush unsent: $chatId")
-
-                val myId = FirebaseAuth.getInstance().currentUser?.uid
-                    ?: return@withContext Result.failure(Exception("NO_SESSION"))
-                val uids = chatId.split("_")
-                val peerId = uids.firstOrNull { it != myId }
-                    ?: return@withContext Result.success(Unit)
-
-                val unsent = messageDao.getUnsentMessages(chatId)
-                android.util.Log.d("ChatRepository", "📨 Unsent count: ${unsent.size}")
-
-                if (unsent.isEmpty()) {
-                    return@withContext Result.success(Unit)
-                }
-
-                // ✅ ПРОВЕРЯЕМ СТАТУС ОНЛАЙН ВСЕГДА!
-                val peerSnapshot = firestore.collection("users")
-                    .document(peerId)
-                    .get()
-                    .await()
-                val isPeerOnline = peerSnapshot.getBoolean("isOnline") ?: false
-
-                android.util.Log.d("ChatRepository", "🌐 Peer online: $isPeerOnline")
-
-                if (!isPeerOnline) {
-                    android.util.Log.d("ChatRepository", "⏳ Peer offline, messages kept in Room")
-                    return@withContext Result.success(Unit)
-                }
-
-                // ✅ Публичный ключ — из кеша Room (0 чтений!)
-                val cachedKey = userRepository.getCachedPeerPublicKey(chatId, myId)
-
-                if (cachedKey != null && cachedKey.isNotEmpty()) {
-                    android.util.Log.d("ChatRepository", "🔑 Using cached public key")
-                    sendMessages(unsent, cachedKey, chatId, myId)
-                    return@withContext Result.success(Unit)
-                }
-
-                // ❌ Только если нет в кеше — идём в Firestore (1 чтение)
-                android.util.Log.d("ChatRepository", "🌐 Fetching public key from Firestore")
-                val chatSnapshot = firestore.collection("chats")
-                    .document(chatId)
-                    .get()
-                    .await()
-
-                if (!chatSnapshot.exists()) {
-                    android.util.Log.e("ChatRepository", "❌ Chat missing")
-                    return@withContext Result.failure(Exception("CHAT_NOT_FOUND"))
-                }
-
-                val isUserA = myId == uids[0]
-                val peerPublicKey = if (isUserA) {
-                    chatSnapshot.getString("publicKeyUserB") ?: ""
-                } else {
-                    chatSnapshot.getString("publicKeyUserA") ?: ""
-                }
-
-                if (peerPublicKey.isEmpty()) {
-                    android.util.Log.e("ChatRepository", "❌ No peer key")
-                    return@withContext Result.failure(Exception("NO_PUBLIC_KEY"))
-                }
-
-                sendMessages(unsent, peerPublicKey, chatId, myId)
+                android.util.Log.d("ChatRepository", "🔄 flushUnsent: $chatId")
+                deliverAllUndeliveredMessages(chatId)
                 Result.success(Unit)
             } catch (e: Exception) {
-                android.util.Log.e("ChatRepository", "❌ Flush error", e)
+                android.util.Log.e("ChatRepository", "❌ flushUnsent error", e)
                 Result.failure(e)
             }
         }
     }
 
-    private suspend fun sendMessages(
-        unsent: List<LocalMessageEntity>,
-        peerPublicKey: String,
-        chatId: String,
-        myId: String
-    ) {
-        unsent.forEach { localMsg ->
-            try {
-                val encryptedText = CryptoManager.encrypt(localMsg.text, peerPublicKey)
-
-                val msgDoc = MessageDocument(
-                    id = localMsg.id,
-                    chatId = chatId,
-                    senderId = myId,
-                    encryptedText = encryptedText,
-                    timestamp = localMsg.timestamp,
-                    isDelivered = false,
-                    isRead = false
-                )
-
-                firestore.collection("chats")
-                    .document(chatId)
-                    .collection("messages")
-                    .document(localMsg.id)
-                    .set(msgDoc)
-                    .await()
-
-                messageDao.markAsSent(localMsg.id)
-                android.util.Log.d("ChatRepository", "✅ Sent: ${localMsg.id}")
-            } catch (e: Exception) {
-                android.util.Log.e("ChatRepository", "❌ Failed to send: ${localMsg.id}", e)
-            }
-        }
-    }
-
     override fun startMessagesTransit(chatId: String): Flow<Unit> = callbackFlow {
-        val myId = FirebaseAuth.getInstance().currentUser?.uid
-        if (myId == null) {
-            close()
-            return@callbackFlow
-        }
-
-        val listener = firestore.collection("chats").document(chatId).collection("messages")
-            .addSnapshotListener { snapshot, error ->
-                if (error != null || snapshot == null) {
-                    return@addSnapshotListener
-                }
-
-                launch(Dispatchers.IO) {
-                    val privateKey = chatKeyDao.getKeyForChat(chatId)?.privateKey ?: return@launch
-
-                    snapshot.documents.forEach { doc ->
-                        val remoteMsg = doc.toObject(MessageDocument::class.java) ?: return@forEach
-
-                        if (remoteMsg.senderId != myId) {
-                            val decryptedText = CryptoManager.decrypt(remoteMsg.encryptedText, privateKey)
-                            messageDao.insertMessage(
-                                LocalMessageEntity(
-                                    id = remoteMsg.id,
-                                    chatId = remoteMsg.chatId,
-                                    senderId = remoteMsg.senderId,
-                                    text = decryptedText,
-                                    timestamp = remoteMsg.timestamp,
-                                    isSent = true,
-                                    isDelivered = true,
-                                    isRead = false
-                                )
-                            )
-                            firestore.collection("chats").document(chatId)
-                                .collection("messages").document(remoteMsg.id)
-                                .delete()
-                        }
-                    }
-                    trySend(Unit)
-                }
-            }
-        awaitClose { listener.remove() }
+        close()
     }
 
     override fun getLocalMessages(chatId: String): Flow<List<LocalMessageEntity>> {
@@ -514,5 +542,17 @@ class ChatRepositoryImpl(
 
     override fun getLastLocalMessage(chatId: String): Flow<LocalMessageEntity?> {
         return messageDao.getLastMessageForChat(chatId)
+    }
+
+    override suspend fun getMessagesSync(chatId: String): List<LocalMessageEntity> {
+        return withContext(Dispatchers.IO) {
+            messageDao.getMessagesSync(chatId)
+        }
+    }
+
+    override suspend fun getLastMessagesSync(chatId: String, limit: Int): List<LocalMessageEntity> {
+        return withContext(Dispatchers.IO) {
+            messageDao.getLastMessagesSync(chatId, limit)
+        }
     }
 }

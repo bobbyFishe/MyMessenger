@@ -37,4 +37,34 @@ interface MessageDao {
     suspend fun getUnreadCount(chatId: String, myId: String): Int
     @Query("SELECT * FROM messages WHERE id = :messageId LIMIT 1")
     suspend fun getMessageById(messageId: String): LocalMessageEntity?
+
+    @Query("""
+        SELECT * FROM messages 
+        WHERE chatId = :chatId 
+        AND isSent = 1 
+        AND isDelivered = 0 
+        ORDER BY timestamp ASC
+    """)
+    suspend fun getUndeliveredMessages(chatId: String): List<LocalMessageEntity>
+
+    @Query("""
+        SELECT * FROM messages 
+        WHERE chatId = :chatId 
+        AND isSent = 1 
+        AND isDelivered = 0 
+        ORDER BY timestamp ASC
+    """)
+    fun getUndeliveredMessagesFlow(chatId: String): Flow<List<LocalMessageEntity>>
+
+    @Query("SELECT * FROM messages WHERE chatId = :chatId ORDER BY timestamp ASC")
+    suspend fun getMessagesSync(chatId: String): List<LocalMessageEntity>
+
+    // ✅ Получить последние N сообщений (для ограничения кеша)
+    @Query("""
+        SELECT * FROM messages 
+        WHERE chatId = :chatId 
+        ORDER BY timestamp DESC 
+        LIMIT :limit
+    """)
+    suspend fun getLastMessagesSync(chatId: String, limit: Int): List<LocalMessageEntity>
 }
