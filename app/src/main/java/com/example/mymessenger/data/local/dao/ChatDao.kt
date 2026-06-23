@@ -15,8 +15,17 @@ interface ChatDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun saveChats(chats: List<ChatEntity>): List<Long>
 
-    @Query("SELECT * FROM chats ORDER BY createdAt DESC")
+    @Query("""
+    SELECT chats.* FROM chats 
+    LEFT JOIN (
+        SELECT chatId, MAX(timestamp) as max_time 
+        FROM messages 
+        GROUP BY chatId
+    ) msg ON chats.id = msg.chatId
+    ORDER BY COALESCE(msg.max_time, chats.createdAt) DESC
+""")
     fun getChats(): Flow<List<ChatEntity>>
+
 
     @Query("SELECT * FROM chats WHERE id = :chatId LIMIT 1")
     suspend fun getChatById(chatId: String): ChatEntity?

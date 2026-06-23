@@ -4,26 +4,25 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.mymessenger.R
 import com.example.mymessenger.data.local.entities.ContactEntity
+import com.example.mymessenger.data.local.entities.LocalMessageEntity
 import com.example.mymessenger.domain.model.ChatDocument
-import com.example.mymessenger.domain.model.User
 import com.example.mymessenger.domain.repository.ChatRepository
 import com.example.mymessenger.domain.repository.UserRepository
 import com.google.firebase.auth.FirebaseAuth
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlin.time.Duration.Companion.milliseconds
+import kotlinx.coroutines.withContext
 
 sealed interface MainUiState {
     object Loading : MainUiState
-    data class Success(
-        val user: User,
-        val chats: List<ChatDocument>
-    ) : MainUiState
+    data class Success(val user: com.example.mymessenger.domain.model.User, val chats: List<ChatDocument>) : MainUiState
     data class Error(val messageResId: Int) : MainUiState
 }
 
@@ -41,12 +40,16 @@ class MainViewModel(
 
     private val _isChatCreatedSuccessfully = MutableStateFlow(false)
     val isChatCreatedSuccessfully = _isChatCreatedSuccessfully.asStateFlow()
+
     private val nameCache = mutableMapOf<String, String>()
+
+    private val activeEngineJobs = mutableMapOf<String, Job>()
+    private var chatsObservationJob: Job? = null
 
     init {
         loadCurrentUserData()
     }
-    // ui/viewmodel/MainViewModel.kt
+
     private fun loadCurrentUserData() {
         val uid = firebaseAuth.currentUser?.uid
         if (uid == null) {
@@ -60,53 +63,37 @@ class MainViewModel(
                     nameCache[userData.uid] = userData.name
                     _uiState.value = MainUiState.Success(user = userData, chats = emptyList())
 
-                    viewModelScope.launch {
+                    chatsObservationJob?.cancel()
+
+                    chatsObservationJob = viewModelScope.launch {
                         userRepository.observeUserChatsWithCache(userData.uid)
                             .catch { exception ->
                                 android.util.Log.e("MainViewModel", "❌ Error observing chats", exception)
                                 _uiState.value = MainUiState.Error(R.string.error_network_failed)
                             }
                             .collect { chatsList ->
-                                android.util.Log.d("MainViewModel", "📋 Chats updated: ${chatsList.size}")
-
-                                // ✅ 1. Завершаем handshake
                                 chatsList.forEach { chatDoc ->
-                                    viewModelScope.launch {
+                                    viewModelScope.launch(Dispatchers.IO) {
                                         userRepository.completeCryptoHandshake(chatDoc)
                                     }
                                 }
-
-                                // ✅ 2. Загружаем имена собеседников
-                                val peerIds = chatsList.mapNotNull { chatDoc ->
-                                    chatDoc.participantIds.firstOrNull { it != userData.uid }
-                                }.distinct()
-
-                                if (peerIds.isNotEmpty()) {
-                                    viewModelScope.launch {
-                                        val result = userRepository.getUsersByIds(peerIds)
-                                        result.onSuccess { users ->
-                                            users.forEach { user ->
-                                                nameCache[user.uid] = user.name
-                                            }
+                                val currentChatIds = chatsList.map { it.id }.toSet()
+                                val obsoleteChatIds = activeEngineJobs.keys.filter { it !in currentChatIds }
+                                obsoleteChatIds.forEach { id ->
+                                    activeEngineJobs[id]?.cancel()
+                                    activeEngineJobs.remove(id)
+                                }
+                                chatsList.forEach { chatDoc ->
+                                    if (!activeEngineJobs.containsKey(chatDoc.id)) {
+                                        activeEngineJobs[chatDoc.id] = viewModelScope.launch {
+                                            chatRepository.startP2PDeliveryEngine(chatDoc.id)
+                                                .catch { e ->
+                                                    android.util.Log.e("MainViewModel", "❌ Engine error for ${chatDoc.id}", e)
+                                                }
+                                                .collect {}
                                         }
                                     }
                                 }
-
-                                // ✅ 3. Запускаем engine ДЛЯ ВСЕХ чатов (включая уже существующие)
-                                chatsList.forEach { chatDoc ->
-                                    viewModelScope.launch {
-                                        android.util.Log.d("MainViewModel", "🚀 Starting engine for: ${chatDoc.id}")
-                                        chatRepository.startP2PDeliveryEngine(chatDoc.id)
-                                            .catch { e ->
-                                                android.util.Log.e("MainViewModel", "❌ Engine error", e)
-                                            }
-                                            .collect {
-                                                // Engine работает
-                                            }
-                                    }
-                                }
-
-                                // ✅ 4. Обновляем UI
                                 _uiState.update { currentState ->
                                     if (currentState is MainUiState.Success) {
                                         currentState.copy(chats = chatsList)
@@ -114,53 +101,39 @@ class MainViewModel(
                                         currentState
                                     }
                                 }
-
-                                // ✅ 5. Доставляем все неотправленные (на случай, если engine не успел)
-                                viewModelScope.launch {
-                                    chatsList.forEach { chatDoc ->
-                                        chatRepository.flushUnsentMessages(chatDoc.id)
-                                    }
-                                }
                             }
                     }
                 },
-                onFailure = {
+                onFailure = { e ->
+                    android.util.Log.e("MainViewModel", "❌ Failed to load user", e)
                     _uiState.value = MainUiState.Error(R.string.error_network_failed)
                 }
             )
         }
     }
 
-    fun getLastMessageFlow(chatId: String) = chatRepository.getLastLocalMessage(chatId)
+    fun getLastMessageFlow(chatId: String): Flow<LocalMessageEntity?> = chatRepository.getLastLocalMessage(chatId)
 
-    // ui/viewmodel/MainViewModel.kt
-    suspend fun getPeerName(peerId: String): String {
-        // 1️⃣ Кеш памяти
-        nameCache[peerId]?.let { return it }
+    suspend fun getPeerName(peerId: String): String = withContext(Dispatchers.IO) {
+        nameCache[peerId]?.let { return@withContext it }
 
-        // 2️⃣ Room (0 чтений)
         val cachedContact = userRepository.getCachedContact(peerId)
         if (cachedContact != null) {
             nameCache[peerId] = cachedContact.name
-            return cachedContact.name
+            return@withContext cachedContact.name
         }
 
-        // 3️⃣ Firestore (1 чтение)
         val name = userRepository.getCurrentUser(peerId).getOrNull()?.name ?: "Пользователь"
         nameCache[peerId] = name
 
-        // Сохраняем в Room
-        viewModelScope.launch {
-            userRepository.saveContact(
-                ContactEntity(
-                    uid = peerId,
-                    name = name,
-                    timestamp = System.currentTimeMillis()
-                )
+        userRepository.saveContact(
+            ContactEntity(
+                uid = peerId,
+                name = name,
+                timestamp = System.currentTimeMillis()
             )
-        }
-
-        return name
+        )
+        return@withContext name
     }
 
     fun logout() {
@@ -172,33 +145,20 @@ class MainViewModel(
         _isChatCreatedSuccessfully.value = false
         val currentState = _uiState.value
 
-        android.util.Log.d("MainViewModel", "🔍 startChatWithUser: inputName=$inputName")
-
-
         if (currentState is MainUiState.Success) {
             if (inputName.trim().equals(currentState.user.name, ignoreCase = true)) {
-
-                android.util.Log.d("MainViewModel", "❌ Cannot search self")
-
                 _searchError.value = R.string.cannot_search_self
                 return
             }
         }
+
         viewModelScope.launch {
-
-            android.util.Log.d("MainViewModel", "🔍 Searching for user: $inputName")
-
             userRepository.searchUserByName(inputName.lowercase()).fold(
                 onSuccess = { foundUser ->
-
-                    android.util.Log.d("MainViewModel", "✅ User found: ${foundUser.uid}, name: ${foundUser.name}")
-
                     val chatResult = userRepository.createEncryptedChat(
                         peerId = foundUser.uid,
                         peerPublicKey = null
                     )
-
-                    android.util.Log.d("MainViewModel", "📝 Chat creation result: ${chatResult.isSuccess}")
 
                     if (chatResult.isSuccess) {
                         _isChatCreatedSuccessfully.value = true
@@ -208,9 +168,6 @@ class MainViewModel(
                     }
                 },
                 onFailure = { exception ->
-
-                    android.util.Log.e("MainViewModel", "❌ Search failed: ${exception.message}")
-
                     if (exception.message == "CONTACT_NOT_FOUND" || exception.message == "USER_NOT_FOUND_IN_FIRESTORE") {
                         _searchError.value = R.string.contact_not_found
                     } else {
@@ -218,32 +175,6 @@ class MainViewModel(
                     }
                 }
             )
-        }
-    }
-
-    fun flushAllUnsentMessages() {
-        android.util.Log.d("MainViewModel", "🔥 flushAllUnsentMessages CALLED")
-
-        viewModelScope.launch {
-            // Ждём, пока загрузятся чаты
-            var attempts = 0
-            while (attempts < 20 && _uiState.value !is MainUiState.Success) {
-                delay(200.milliseconds)
-                attempts++
-                android.util.Log.d("MainViewModel", "⏳ Waiting for chats to load... attempt $attempts")
-            }
-
-            val currentState = _uiState.value
-            android.util.Log.d("MainViewModel", "🔥 currentState: $currentState")
-
-            if (currentState is MainUiState.Success) {
-                android.util.Log.d("MainViewModel", "🔄 Flushing unsent messages for ${currentState.chats.size} chats")
-                currentState.chats.forEach { chatDoc ->
-                    chatRepository.flushUnsentMessages(chatDoc.id)
-                }
-            } else {
-                android.util.Log.e("MainViewModel", "❌ State is not Success: $currentState")
-            }
         }
     }
 
@@ -257,5 +188,12 @@ class MainViewModel(
     fun resetSearchState() {
         _searchError.value = null
         _isChatCreatedSuccessfully.value = false
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        activeEngineJobs.values.forEach { it.cancel() }
+        activeEngineJobs.clear()
+        chatsObservationJob?.cancel()
     }
 }

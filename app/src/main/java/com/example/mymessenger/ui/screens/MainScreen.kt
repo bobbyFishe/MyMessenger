@@ -54,10 +54,6 @@ fun MainScreen(
     val searchError by viewModel.searchError.collectAsState()
     val isChatCreatedSuccessfully by viewModel.isChatCreatedSuccessfully.collectAsState()
 
-    LaunchedEffect(Unit) {
-        viewModel.flushAllUnsentMessages()
-    }
-
     MainScreenContent(
         uiState = uiState,
         searchError = searchError,

@@ -11,7 +11,5 @@ data class LocalMessageEntity(
     val senderId: String,
     val text: String,
     val timestamp: Long,
-    val isSent: Boolean = false,
-    val isDelivered: Boolean = false,
-    val isRead: Boolean = false
+    val isMine: Boolean
 )

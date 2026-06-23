@@ -36,7 +36,6 @@ fun MessageBubble(
         horizontalAlignment = if (isMyMessage) Alignment.End else Alignment.Start,
         modifier = Modifier.padding(vertical = 2.dp)
     ) {
-        // Само сообщение
         Box(
             modifier = Modifier
                 .background(
@@ -63,101 +62,20 @@ fun MessageBubble(
             )
         }
 
-        // Статус + время (для своих сообщений)
-        if (isMyMessage) {
-            Row(
-                modifier = Modifier.padding(top = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Статус
-                when {
-                    message.isRead -> {
-                        Icon(
-                            imageVector = Icons.Default.DoneAll,
-                            contentDescription = "Прочитано",
-                            tint = Color(0xFF4CAF50),
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Text(
-                            text = "Прочитано",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF4CAF50),
-                            fontSize = 10.sp
-                        )
-                    }
-                    message.isDelivered -> {
-                        Icon(
-                            imageVector = Icons.Default.DoneAll,
-                            contentDescription = "Доставлено",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Text(
-                            text = "Доставлено",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 10.sp
-                        )
-                    }
-                    message.isSent -> {
-                        Icon(
-                            imageVector = Icons.Default.Done,
-                            contentDescription = "Отправлено",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Text(
-                            text = "Отправлено",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 10.sp
-                        )
-                    }
-                    else -> {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(12.dp),
-                            strokeWidth = 1.5.dp
-                        )
-                        Text(
-                            text = "Отправка...",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 10.sp
-                        )
-                    }
-                }
-
-                // Разделитель
-                Text(
-                    text = "•",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 10.sp
-                )
-
-                // Время
-                Text(
-                    text = formatTime(message.timestamp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 10.sp
-                )
-            }
-        } else {
-            // Для сообщений собеседника - только время
+        Row(
+            modifier = Modifier.padding(top = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Text(
                 text = formatTime(message.timestamp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 10.sp,
-                modifier = Modifier.padding(top = 2.dp)
+                fontSize = 10.sp
             )
         }
     }
 }
 
-// Форматирование времени
 private fun formatTime(timestamp: Long): String {
     val date = Date(timestamp)
     return SimpleDateFormat("HH:mm", Locale.getDefault()).format(date)

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -27,15 +28,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.mymessenger.data.local.entities.LocalMessageEntity
 import com.example.mymessenger.ui.theme.spacings
 import com.example.mymessenger.ui.viewmodel.MainUiState
-import com.example.mymessenger.ui.viewmodel.MainViewModel
 import kotlinx.coroutines.flow.Flow
 
 @Composable
@@ -63,7 +62,7 @@ fun MainScreenChatsContent(
             is MainUiState.Success -> {
                 if (uiState.chats.isEmpty()) {
                     Text(
-                        text = "У вас пока нет activeных чатов.\nНажмите +, чтобы добавить друга.",
+                        text = "У вас пока нет активных чатов.\nНажмите +, чтобы добавить друга.",
                         textAlign = TextAlign.Center,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -73,16 +72,23 @@ fun MainScreenChatsContent(
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacings.extraSmall)
                     ) {
-                        items(uiState.chats.size) { index ->
-                            val chatDoc = uiState.chats[index]
+                        // 🔥 ИСПРАВЛЕНО: Используем items(uiState.chats) вместо items(size)
+                        // и передаем уникальный key для стабильности списка при скролле
+                        items(
+                            items = uiState.chats,
+                            key = { chat -> chat.id }
+                        ) { chatDoc ->
 
-                            val lastMessageEntity by getLastMessageFlow(chatDoc.id)
+                            // Реактивно подписываемся на последнее сообщение из Room
+                            val lastMessageEntity by remember(chatDoc.id) { getLastMessageFlow(chatDoc.id) }
                                 .collectAsState(initial = null)
 
                             val uids = chatDoc.id.split("_")
                             val isSelfChat = uids.size >= 2 && uids[0] == uids[1]
 
-                            var peerName by remember {
+                            // 🔥 ИСПРАВЛЕНО: Добавлен ключ chatDoc.id в remember.
+                            // Теперь при переиспользовании ячейки имя гарантированно сбросится на "Загрузка..."
+                            var peerName by remember(chatDoc.id) {
                                 mutableStateOf(if (isSelfChat) "Избранное" else "Загрузка...")
                             }
 
@@ -140,10 +146,11 @@ fun MainScreenChatsContent(
                                             style = MaterialTheme.typography.bodyMedium,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             maxLines = 1,
-                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
 
+                                    // Зеленый индикатор безопасного соединения
                                     Box(
                                         modifier = Modifier
                                             .size(10.dp)

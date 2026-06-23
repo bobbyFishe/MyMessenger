@@ -19,7 +19,7 @@ import com.example.mymessenger.data.local.entities.LocalMessageEntity
         ContactEntity::class,
         ChatEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 

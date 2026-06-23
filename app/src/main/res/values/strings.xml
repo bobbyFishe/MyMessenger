@@ -59,6 +59,6 @@
     <string name="cannot_search_self">Вы не можете добавить в контакты самого себя</string>
     <string name="message_placeholder">Сообщение</string>
     <string name="send_content_desc">Отправить сообщение</string>
-
+    <string name="chat">Чат</string>
 
 </resources>

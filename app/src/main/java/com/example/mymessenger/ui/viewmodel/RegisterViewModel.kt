@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
 sealed interface RegisterResultState {
     object Idle : RegisterResultState
@@ -133,26 +134,36 @@ class RegisterViewModel(
     fun register() {
         if (!isInputValid) return
         _resultState.value = RegisterResultState.Loading
+
         viewModelScope.launch {
             val state = _uiState.value
             val result = registerWithEmailUseCase(state.name, state.email, state.password)
+
             result.fold(
                 onSuccess = { userId ->
+                    // Получаем текущего пользователя Firebase безопасности ради
                     val currentUser = FirebaseAuth.getInstance().currentUser
+
                     if (currentUser != null) {
-                        userRepository.createEncryptedChat(peerId = userId, peerPublicKey = null)
-                        currentUser.sendEmailVerification()
-                            .addOnCompleteListener { task ->
-                                if (task.isSuccessful) {
-                                    _resultState.value = RegisterResultState.Success
-                                } else {
-                                    val error = task.exception?.localizedMessage ?: ""
-                                    _resultState.value = RegisterResultState.Error(
-                                        messageResId = R.string.error_sending_email,
-                                        dynamicMessage = error
-                                    )
-                                }
-                            }
+                        try {
+                            // 1. Создаем чат ИЗБРАННОЕ (передаем UID текущего пользователя)
+                            userRepository.createEncryptedChat(
+                                peerId = currentUser.uid,
+                                peerPublicKey = null
+                            )
+
+                            currentUser.sendEmailVerification().await()
+
+                            // Если все прошло успешно — меняем стейт
+                            _resultState.value = RegisterResultState.Success
+
+                        } catch (e: Exception) {
+                            // Перехватываем ошибки отправки email или создания чата
+                            _resultState.value = RegisterResultState.Error(
+                                messageResId = R.string.error_sending_email,
+                                dynamicMessage = e.localizedMessage
+                            )
+                        }
                     } else {
                         _resultState.value = RegisterResultState.Error(R.string.session_authorization_error)
                     }
@@ -162,10 +173,10 @@ class RegisterViewModel(
                         is FirebaseAuthUserCollisionException -> R.string.error_email_collision
                         else -> R.string.error_unknown_registration
                     }
-                    _resultState.value = RegisterResultState.Error(
-                        messageResId = errorResId)
+                    _resultState.value = RegisterResultState.Error(messageResId = errorResId)
                 }
             )
         }
     }
+
 }

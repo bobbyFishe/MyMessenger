@@ -47,14 +47,29 @@ val appModule = module {
     single { get<AppDatabase>().chatKeyDao() }
     single { get<AppDatabase>().messageDao() }
     single { get<AppDatabase>().contactDao() }
-    single<AuthRepository> { FirebaseAuthRepositoryImpl() }
+    single<AuthRepository> { FirebaseAuthRepositoryImpl(
+        contactDao = get()
+    ) }
     factory { RegisterWithEmailUseCase(get()) }
     factory { CheckNameUseCase(get()) }
     factory { ResetPasswordUseCase(get()) }
     factory { LoginWithEmailUseCase(get()) }
     viewModel { LoginViewModel(get(), get()) }
     viewModel { RegisterViewModel(get(), get(), get()) }
-    single<UserRepository> { UserRepositoryImpl(firestore = get(), chatKeyDao = get(), get(), get()) }
-    viewModel { MainViewModel(userRepository = get(), firebaseAuth = get(), chatRepository = get()) }
+    single<UserRepository> {
+        UserRepositoryImpl(
+            firestore = get(),
+            chatKeyDao = get(),
+            get(),
+            get()
+        )
+    }
+    viewModel {
+        MainViewModel(
+            userRepository = get(),
+            firebaseAuth = get(),
+            chatRepository = get()
+        )
+    }
     viewModel { ChatDetailViewModel(chatRepository = get()) }
 }

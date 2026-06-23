@@ -3,23 +3,21 @@ package com.example.mymessenger.ui.screens
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.CircularProgressIndicator
@@ -41,18 +39,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.example.mymessenger.R
+import com.example.mymessenger.data.local.entities.LocalMessageEntity
+import com.example.mymessenger.ui.theme.MyMessengerTheme
+import com.example.mymessenger.ui.theme.spacings
 import com.example.mymessenger.ui.viewmodel.ChatDetailUiState
 import com.example.mymessenger.ui.viewmodel.ChatDetailViewModel
 import com.google.firebase.auth.FirebaseAuth
 import org.koin.androidx.compose.koinViewModel
-
-// ui/screens/ChatDetailScreen.kt
 
 @Composable
 fun ChatDetailScreen(
@@ -64,132 +63,82 @@ fun ChatDetailScreen(
     val messageText by viewModel.messageText.collectAsState()
 
     val myId = remember { FirebaseAuth.getInstance().currentUser?.uid ?: "" }
-    val keyboardController = LocalSoftwareKeyboardController.current
-
-    // Создаем lazyListState здесь, чтобы управлять им и сохранять его состояние
-    val lazyListState = rememberLazyListState()
+    val lazyListState = rememberLazyListState(initialFirstVisibleItemIndex = 0)
 
     LaunchedEffect(chatId) {
         viewModel.initChat(chatId)
     }
 
+    LaunchedEffect(chatId, uiState) {
+        if (uiState is ChatDetailUiState.Success) {
+            val messages = (uiState as ChatDetailUiState.Success).messages
+            if (!viewModel.isChatLoaded(chatId) && messages.isNotEmpty()) {
+                val savedPos = viewModel.getScrollPosition(chatId)
+                lazyListState.scrollToItem(savedPos ?: 0)
+                viewModel.markChatAsLoaded(chatId)
+            }
+        }
+    }
+
     LaunchedEffect(uiState) {
         if (uiState is ChatDetailUiState.Success) {
             val messages = (uiState as ChatDetailUiState.Success).messages
-
-            // 💡 ЭТОТ БЛОК ОТВЕЧАЕТ ЗА ВОССТАНОВЛЕНИЕ ИЗНАЧАЛЬНОГО СКРОЛЛА
-            if (!viewModel.isChatLoaded(chatId)) {
-                if (messages.isNotEmpty()) {
-                    val savedPos = viewModel.getScrollPosition(chatId)
-                    if (savedPos != null) {
-                        // Если позиция была сохранена, восстанавливаем её без анимации
-                        lazyListState.scrollToItem(savedPos)
-                    } else {
-                        // Если открываем впервые и позиции нет, плавно скроллим в самый конец
-                        lazyListState.scrollToItem(messages.size - 1)
-                    }
-                    viewModel.markChatAsLoaded(chatId)
-                }
-            }
-
-            val unreadMessages = messages.filter {
-                it.senderId != myId && !it.isRead
-            }
-
-            if (unreadMessages.isNotEmpty()) {
-                android.util.Log.d("ChatDetailScreen", "📖 Marking ${unreadMessages.size} messages as read")
-                unreadMessages.forEach { message ->
-                    viewModel.markMessageAsRead(message.id)
+            if (messages.isNotEmpty()) {
+                val isMyLastMessage = messages.last().senderId == myId
+                val isAtBottom = lazyListState.firstVisibleItemIndex == 0
+                if (isMyLastMessage || isAtBottom) {
+                    lazyListState.animateScrollToItem(0)
                 }
             }
         }
     }
 
-    // Сохраняем позицию скролла при закрытии экрана или смене chatId
     DisposableEffect(chatId) {
-        viewModel.onResume()
         onDispose {
-            // Сохраняем индекс первого видимого элемента как текущую позицию
             val currentPosition = lazyListState.firstVisibleItemIndex
             viewModel.saveScrollPosition(chatId, currentPosition)
         }
     }
 
     ChatDetailContent(
-        chatId = chatId,
         uiState = uiState,
         messageText = messageText,
         myId = myId,
-        lazyListState = lazyListState, // Передаем состояние скролла внутрь
+        lazyListState = lazyListState,
         onMessageTextChange = { viewModel.updateMessageText(it) },
-        onSendClick = {
-            viewModel.sendMessage()
-            keyboardController?.hide()
-        },
+        onSendClick = { viewModel.sendMessage() },
         onBackClick = onBackClick
     )
 }
 
-
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatDetailContent(
-    chatId: String,
     uiState: ChatDetailUiState,
     messageText: String,
     myId: String,
-    lazyListState: LazyListState, // Принимаем состояние из родителя
+    lazyListState: LazyListState,
     onMessageTextChange: (String) -> Unit,
     onSendClick: () -> Unit,
     onBackClick: () -> Unit
 ) {
-    val isKeyboardVisible = WindowInsets.isImeVisible
-
-    // 💡 УМНЫЙ СКРОЛЛ ДЛЯ НОВЫХ СООБЩЕНИЙ И КЛАВИАТУРЫ
-    if (uiState is ChatDetailUiState.Success && uiState.messages.isNotEmpty()) {
-        val messages = uiState.messages
-
-        // Отслеживаем появление новых сообщений
-        LaunchedEffect(messages.size) {
-            if (messages.isNotEmpty()) {
-                val lastIndex = messages.size - 1
-                val isMyLastMessage = messages.last().senderId == myId
-
-                // Проверяем, видит ли пользователь последнее сообщение прямо сейчас
-                val isAtBottom = lazyListState.layoutInfo.visibleItemsInfo.lastOrNull()?.index == lazyListState.layoutInfo.totalItemsCount - 1
-
-                // Скроллим вниз ТОЛЬКО если это наше сообщение ИЛИ если пользователь уже был в самом низу чата
-                if (isMyLastMessage || isAtBottom) {
-                    lazyListState.animateScrollToItem(lastIndex)
-                }
-            }
-        }
-
-        // Скролл при открытии клавиатуры
-        LaunchedEffect(isKeyboardVisible) {
-            if (isKeyboardVisible && messages.isNotEmpty()) {
-                lazyListState.animateScrollToItem(messages.size - 1)
-            }
-        }
-    }
-
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(text = "Чат", style = MaterialTheme.typography.titleMedium) },
+                title = { Text(text = stringResource(R.string.chat), style = MaterialTheme.typography.titleMedium) },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = null)
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
                     }
                 }
             )
-        }
+        },
+        modifier = Modifier.imePadding()
     ) { innerPadding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .windowInsetsPadding(WindowInsets.ime) // Идеальный отступ под клавиатуру и кнопки
         ) {
             Box(
                 modifier = Modifier
@@ -200,22 +149,30 @@ fun ChatDetailContent(
                     is ChatDetailUiState.Loading -> {
                         CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
                     }
+
                     is ChatDetailUiState.Error -> {
                         Text(
-                            stringResource(uiState.messageResId),
+                            text = stringResource(uiState.messageResId),
                             color = MaterialTheme.colorScheme.error,
                             modifier = Modifier.align(Alignment.Center)
                         )
                     }
+
                     is ChatDetailUiState.Success -> {
+                        val reversedMessages = remember(uiState.messages) {
+                            uiState.messages.reversed()
+                        }
                         LazyColumn(
-                            state = lazyListState, // Используем переданный state
+                            state = lazyListState,
                             modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                            contentPadding = PaddingValues(MaterialTheme.spacings.medium),
+                            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacings.extraSmall),
+                            reverseLayout = true
                         ) {
-                            items(uiState.messages.size) { index ->
-                                val msg = uiState.messages[index]
+                            itemsIndexed(
+                                items = reversedMessages,
+                                key = { _, msg -> msg.id }
+                            ) { _, msg ->
                                 val isMyMessage = msg.senderId == myId
 
                                 Row(
@@ -233,17 +190,16 @@ fun ChatDetailContent(
                 }
             }
 
-            // Поле ввода (остается без изменений)
             Surface(
-                tonalElevation = 2.dp,
+                tonalElevation = MaterialTheme.spacings.extraSmall,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .padding(horizontal = MaterialTheme.spacings.extraSmall, vertical = MaterialTheme.spacings.extraSmall),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacings.extraSmall)
                 ) {
                     OutlinedTextField(
                         value = messageText,
@@ -254,7 +210,7 @@ fun ChatDetailContent(
                             keyboardType = KeyboardType.Text,
                             imeAction = ImeAction.Send
                         ),
-                        shape = RoundedCornerShape(24.dp),
+                        shape = RoundedCornerShape(MaterialTheme.spacings.large),
                         modifier = Modifier.weight(1f)
                     )
 
@@ -266,15 +222,55 @@ fun ChatDetailContent(
                             contentColor = MaterialTheme.colorScheme.onPrimary,
                             disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
                             disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        ),
+                        modifier = Modifier.size(56.dp)
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.Send,
-                            contentDescription = stringResource(R.string.send_content_desc)
+                            contentDescription = stringResource(R.string.send_content_desc),
+                            modifier = Modifier.size(28.dp)
                         )
                     }
                 }
             }
         }
+    }
+}
+
+@Preview(showBackground = true, showSystemUi = true)
+@Composable
+fun ChatDetailContentPreview() {
+    val fakeMessages = listOf(
+        LocalMessageEntity(
+            id = "1", chatId = "chat_123", senderId = "peer_id",
+            text = "Привет! Как дела?",
+            timestamp = System.currentTimeMillis() - 120000, isMine = false
+        ),
+        LocalMessageEntity(
+            id = "2", chatId = "chat_123", senderId = "my_id",
+            text = "Привет! Всё отлично, спасибо)",
+            timestamp = System.currentTimeMillis() - 60000, isMine = true
+        ),
+        LocalMessageEntity(
+            id = "3", chatId = "chat_123", senderId = "peer_id",
+            text = "Это длинное сообщение от собеседника, которое занимает несколько строк и проверяет перенос текста в пузыре",
+            timestamp = System.currentTimeMillis() - 30000, isMine = false
+        ),
+        LocalMessageEntity(
+            id = "4", chatId = "chat_123", senderId = "my_id",
+            text = "Окей!",
+            timestamp = System.currentTimeMillis(), isMine = true
+        )
+    )
+    MyMessengerTheme {
+        ChatDetailContent(
+            uiState = ChatDetailUiState.Success(messages = fakeMessages),
+            messageText = "",
+            myId = "my_id",
+            lazyListState = rememberLazyListState(),
+            onMessageTextChange = {},
+            onSendClick = {},
+            onBackClick = {}
+        )
     }
 }

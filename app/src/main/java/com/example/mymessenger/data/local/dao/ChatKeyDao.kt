@@ -13,4 +13,7 @@ interface ChatKeyDao {
 
     @Query("SELECT * FROM chat_keys WHERE chatId = :chatId LIMIT 1")
     suspend fun getKeyForChat(chatId: String): ChatKeyEntity?
+
+    @Query("SELECT * FROM chat_keys")
+    suspend fun getAllKeys(): List<ChatKeyEntity>
 }
