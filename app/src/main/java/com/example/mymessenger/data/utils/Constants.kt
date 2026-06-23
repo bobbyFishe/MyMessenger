@@ -2,6 +2,8 @@ package com.example.mymessenger.data.utils
 
 object Constants {
     const val FIRESTORE_USERS_COLLECTION = "users"
+    const val FIRESTORE_MESSAGES = "messages"
+    const val FIRESTORE_CHATS = "chats"
     const val MIN_PASSWORD_LENGTH = 8
     const val GENERATE_NAME_COUNT = 50
     const val MESSAGE_LENGTH = 2000

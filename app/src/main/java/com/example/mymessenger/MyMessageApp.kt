@@ -1,6 +1,7 @@
 package com.example.mymessenger
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.navigation
@@ -20,6 +21,21 @@ fun MyMessageApp() {
     val firebaseAuth = FirebaseAuth.getInstance()
     val isUserLoggedIn = firebaseAuth.currentUser != null && firebaseAuth.currentUser?.isEmailVerified == true
     val startGraph = if (isUserLoggedIn) "main_graph" else "auth_graph"
+
+
+    LaunchedEffect(Unit) {
+        MainActivity.notificationChatClickFlow.collect { chatId ->
+            if (firebaseAuth.currentUser != null) {
+                navController.navigate("chat_detail/$chatId") {
+                    popUpTo("chats_list") {
+                        inclusive = false
+                    }
+                    launchSingleTop = true
+                }
+            }
+        }
+    }
+
     NavHost(
         navController = navController,
         startDestination = startGraph

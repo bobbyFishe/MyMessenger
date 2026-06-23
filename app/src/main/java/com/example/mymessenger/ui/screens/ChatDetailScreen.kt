@@ -19,7 +19,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -64,6 +63,7 @@ fun ChatDetailScreen(
 
     val myId = remember { FirebaseAuth.getInstance().currentUser?.uid ?: "" }
     val lazyListState = rememberLazyListState(initialFirstVisibleItemIndex = 0)
+    val latestMessageId = (uiState as? ChatDetailUiState.Success)?.messages?.firstOrNull()?.id
 
     LaunchedEffect(chatId) {
         viewModel.initChat(chatId)
@@ -80,18 +80,25 @@ fun ChatDetailScreen(
         }
     }
 
-    LaunchedEffect(uiState) {
-        if (uiState is ChatDetailUiState.Success) {
+    LaunchedEffect(latestMessageId) {
+        if (uiState is ChatDetailUiState.Success && latestMessageId != null) {
             val messages = (uiState as ChatDetailUiState.Success).messages
-            if (messages.isNotEmpty()) {
-                val isMyLastMessage = messages.last().senderId == myId
-                val isAtBottom = lazyListState.firstVisibleItemIndex == 0
-                if (isMyLastMessage || isAtBottom) {
-                    lazyListState.animateScrollToItem(0)
-                }
+            val isMyLastMessage = messages.first().senderId == myId
+
+            // Проверяем, находится ли пользователь внизу чата
+            val isAtBottom = lazyListState.firstVisibleItemIndex == 0
+
+            if (isMyLastMessage || isAtBottom) {
+                // КРИТИЧЕСКИЙ ШАГ: Пропускаем один такт отрисовки Compose.
+                // Это даёт системе время высчитать высоту нового MessageBubble.
+                kotlinx.coroutines.yield()
+
+                // Жестко прижимаем список к самому низу (индексу 0)
+                lazyListState.scrollToItem(0)
             }
         }
     }
+
 
     DisposableEffect(chatId) {
         onDispose {
@@ -125,7 +132,12 @@ fun ChatDetailContent(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(text = stringResource(R.string.chat), style = MaterialTheme.typography.titleMedium) },
+                title = {
+                    Text(
+                        text = stringResource(R.string.chat),
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
@@ -159,9 +171,7 @@ fun ChatDetailContent(
                     }
 
                     is ChatDetailUiState.Success -> {
-                        val reversedMessages = remember(uiState.messages) {
-                            uiState.messages.reversed()
-                        }
+                        val messages = uiState.messages
                         LazyColumn(
                             state = lazyListState,
                             modifier = Modifier.fillMaxSize(),
@@ -170,13 +180,19 @@ fun ChatDetailContent(
                             reverseLayout = true
                         ) {
                             itemsIndexed(
-                                items = reversedMessages,
+                                items = messages,
                                 key = { _, msg -> msg.id }
                             ) { _, msg ->
                                 val isMyMessage = msg.senderId == myId
 
                                 Row(
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .animateItem(
+                                            placementSpec = androidx.compose.animation.core.tween(
+                                                durationMillis = 250
+                                            )
+                                        ),
                                     horizontalArrangement = if (isMyMessage) Arrangement.End else Arrangement.Start
                                 ) {
                                     MessageBubble(
@@ -197,7 +213,10 @@ fun ChatDetailContent(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = MaterialTheme.spacings.extraSmall, vertical = MaterialTheme.spacings.extraSmall),
+                        .padding(
+                            horizontal = MaterialTheme.spacings.extraSmall,
+                            vertical = MaterialTheme.spacings.extraSmall
+                        ),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacings.extraSmall)
                 ) {
@@ -244,22 +263,26 @@ fun ChatDetailContentPreview() {
         LocalMessageEntity(
             id = "1", chatId = "chat_123", senderId = "peer_id",
             text = "Привет! Как дела?",
-            timestamp = System.currentTimeMillis() - 120000, isMine = false
+            timestamp = System.currentTimeMillis() - 120000, isMine = false,
+            isRead = true
         ),
         LocalMessageEntity(
             id = "2", chatId = "chat_123", senderId = "my_id",
             text = "Привет! Всё отлично, спасибо)",
-            timestamp = System.currentTimeMillis() - 60000, isMine = true
+            timestamp = System.currentTimeMillis() - 60000, isMine = true,
+            isRead = true
         ),
         LocalMessageEntity(
             id = "3", chatId = "chat_123", senderId = "peer_id",
             text = "Это длинное сообщение от собеседника, которое занимает несколько строк и проверяет перенос текста в пузыре",
-            timestamp = System.currentTimeMillis() - 30000, isMine = false
+            timestamp = System.currentTimeMillis() - 30000, isMine = false,
+            isRead = false
         ),
         LocalMessageEntity(
             id = "4", chatId = "chat_123", senderId = "my_id",
             text = "Окей!",
-            timestamp = System.currentTimeMillis(), isMine = true
+            timestamp = System.currentTimeMillis(), isMine = true,
+            isRead = false
         )
     )
     MyMessengerTheme {

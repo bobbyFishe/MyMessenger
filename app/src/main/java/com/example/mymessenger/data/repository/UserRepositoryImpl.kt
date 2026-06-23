@@ -26,8 +26,8 @@ import kotlinx.coroutines.withContext
 class UserRepositoryImpl(
     private val firestore: FirebaseFirestore,
     private val chatKeyDao: ChatKeyDao,
-    private val contactDao: ContactDao,
-    private val chatDao: ChatDao
+    private val chatDao: ChatDao,
+    private val contactDao: ContactDao
 ) : UserRepository {
     override suspend fun getCurrentUser(uid: String): Result<User> {
         return withContext(Dispatchers.IO) {

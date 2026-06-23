@@ -23,47 +23,62 @@ import org.koin.core.module.dsl.viewModel
 import org.koin.dsl.module
 
 val appModule = module {
+    // 1. Системные синглтоны (Firebase)
     single { FirebaseFirestore.getInstance() }
     single { FirebaseAuth.getInstance() }
+
+    // 2. База данных Room (Очищенная от принудительного открытия на Main Thread)
     single {
-        val db = Room.databaseBuilder(
+        Room.databaseBuilder(
             androidContext(),
             AppDatabase::class.java,
             "secure_messenger.db"
-        ).fallbackToDestructiveMigration(false).build()
-
-        db.openHelper.writableDatabase
-        db
+        )
+            .fallbackToDestructiveMigration(false)
+            .build()
+        // 🔥 УДАЛЕНО: db.openHelper.writableDatabase (это вызывало краш на Main Thread)
     }
+
+    // 3. Локальные DAO
+    single { get<AppDatabase>().chatDao() }
+    single { get<AppDatabase>().chatKeyDao() }
+    single { get<AppDatabase>().messageDao() }
+    single { get<AppDatabase>().contactDao() }
+
+    // 4. Репозитории данных
+    single<AuthRepository> {
+        FirebaseAuthRepositoryImpl(contactDao = get())
+    }
+
+    single<UserRepository> {
+        UserRepositoryImpl(
+            firestore = get(),
+            chatKeyDao = get(),
+            chatDao = get(),
+            contactDao = get()
+        )
+    }
+
     single<ChatRepository> {
         ChatRepositoryImpl(
+            context = androidContext(),
             firestore = get(),
             messageDao = get(),
             chatKeyDao = get(),
             userRepository = get()
         )
     }
-    single { get<AppDatabase>().chatDao() }
-    single { get<AppDatabase>().chatKeyDao() }
-    single { get<AppDatabase>().messageDao() }
-    single { get<AppDatabase>().contactDao() }
-    single<AuthRepository> { FirebaseAuthRepositoryImpl(
-        contactDao = get()
-    ) }
+
+    // 5. UseCases
     factory { RegisterWithEmailUseCase(get()) }
     factory { CheckNameUseCase(get()) }
     factory { ResetPasswordUseCase(get()) }
     factory { LoginWithEmailUseCase(get()) }
+
+    // 6. Слой UI (ViewModels)
     viewModel { LoginViewModel(get(), get()) }
     viewModel { RegisterViewModel(get(), get(), get()) }
-    single<UserRepository> {
-        UserRepositoryImpl(
-            firestore = get(),
-            chatKeyDao = get(),
-            get(),
-            get()
-        )
-    }
+    viewModel { ChatDetailViewModel(chatRepository = get()) }
     viewModel {
         MainViewModel(
             userRepository = get(),
@@ -71,5 +86,4 @@ val appModule = module {
             chatRepository = get()
         )
     }
-    viewModel { ChatDetailViewModel(chatRepository = get()) }
 }

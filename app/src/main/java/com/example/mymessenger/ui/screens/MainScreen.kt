@@ -42,6 +42,8 @@ import com.example.mymessenger.ui.theme.MyMessengerTheme
 import com.example.mymessenger.ui.viewmodel.MainUiState
 import com.example.mymessenger.ui.viewmodel.MainViewModel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import org.koin.androidx.compose.koinViewModel
 
 @Composable
@@ -53,6 +55,17 @@ fun MainScreen(
     val uiState by viewModel.uiState.collectAsState()
     val searchError by viewModel.searchError.collectAsState()
     val isChatCreatedSuccessfully by viewModel.isChatCreatedSuccessfully.collectAsState()
+
+    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+        val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+            contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+        ) { isGranted ->
+            // Результат запроса (можно залогировать)
+        }
+        LaunchedEffect(Unit) {
+            permissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     MainScreenContent(
         uiState = uiState,
@@ -66,7 +79,8 @@ fun MainScreen(
         },
         onChatClick = onChatClick,
         getLastMessageFlow = { chatId -> viewModel.getLastMessageFlow(chatId) },
-        getPeerName = { peerId -> viewModel.getPeerName(peerId) }
+        getPeerName = { peerId -> viewModel.getPeerName(peerId) },
+        getUnreadCountFlow = { chatId -> viewModel.getUnreadCountFlow(chatId) }
     )
 }
 
@@ -81,7 +95,8 @@ fun MainScreenContent(
     onLogoutClick: () -> Unit,
     onChatClick: (String) -> Unit,
     getLastMessageFlow: (String) -> Flow<LocalMessageEntity?>,
-    getPeerName: suspend (String) -> String
+    getPeerName: suspend (String) -> String,
+    getUnreadCountFlow: (String) -> Flow<Int>,
 ) {
     var isMenuExpanded by remember { mutableStateOf(false) }
     var isShowSearchDialog by remember { mutableStateOf(false) }
@@ -149,6 +164,7 @@ fun MainScreenContent(
         MainScreenChatsContent(
             uiState = uiState,
             getLastMessageFlow = getLastMessageFlow,
+            getUnreadCountFlow = { chatId -> getUnreadCountFlow(chatId) },
             getPeerName = getPeerName,
             modifier = Modifier.padding(innerPadding),
             onChatClick = onChatClick
@@ -250,8 +266,11 @@ fun MainScreenPreview() {
             onDismissSearch = {},
             onLogoutClick = {},
             onChatClick = {},
-            getLastMessageFlow = { _ -> kotlinx.coroutines.flow.flowOf(null) },
-            getPeerName = { _ -> "James_Abbott" }
+            getLastMessageFlow = { _ -> flowOf(null) },
+            getPeerName = { _ -> "James_Abbott" },
+            getUnreadCountFlow = { chatId ->
+                if (chatId == "friend_uid_my_test_uid") flowOf(2) else flowOf(0) // Имитируем 2 непрочитанных сообщения
+            }
         )
     }
 }

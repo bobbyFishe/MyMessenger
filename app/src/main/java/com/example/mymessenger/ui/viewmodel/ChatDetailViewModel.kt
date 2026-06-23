@@ -32,8 +32,6 @@ class ChatDetailViewModel(
     val messageText: StateFlow<String> = _messageText.asStateFlow()
 
     private var currentChatId: String? = null
-
-    // 🔥 ИСПРАВЛЕНО: Хранилище для текущей активной корутины подписки на сообщения
     private var messageObservationJob: Job? = null
 
     private val CACHE_MESSAGE_LIMIT = 300
@@ -45,6 +43,10 @@ class ChatDetailViewModel(
 
         currentChatId = chatId
             //_uiState.value = ChatDetailUiState.Loading
+        chatRepository.setActiveChatId(chatId)
+        viewModelScope.launch {
+            chatRepository.markMessagesAsRead(chatId)
+        }
 
         messageObservationJob?.cancel()
 
@@ -65,6 +67,7 @@ class ChatDetailViewModel(
                 }
                 .collect { newMessages ->
                     if (currentChatId == chatId) {
+                        chatRepository.markMessagesAsRead(chatId)
                         val limited = if (newMessages.size > CACHE_MESSAGE_LIMIT) {
                             newMessages.takeLast(CACHE_MESSAGE_LIMIT)
                         } else {
@@ -108,7 +111,10 @@ class ChatDetailViewModel(
 
     override fun onCleared() {
         super.onCleared()
-        messageObservationJob?.cancel() // Зачищаем подписку при уничтожении экрана
+        messageObservationJob?.cancel()
+        if (chatRepository.getActiveChatId() == currentChatId) {
+            chatRepository.setActiveChatId(null)
+        }
         scrollPositions.clear()
         loadedChats.clear()
     }

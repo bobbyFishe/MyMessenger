@@ -196,4 +196,6 @@ class MainViewModel(
         activeEngineJobs.clear()
         chatsObservationJob?.cancel()
     }
+
+    fun getUnreadCountFlow(chatId: String): Flow<Int> = chatRepository.getUnreadCount(chatId)
 }

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -29,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -41,6 +43,7 @@ import kotlinx.coroutines.flow.Flow
 fun MainScreenChatsContent(
     uiState: MainUiState,
     getLastMessageFlow: (String) -> Flow<LocalMessageEntity?>,
+    getUnreadCountFlow: (String) -> Flow<Int>,
     getPeerName: suspend (String) -> String,
     modifier: Modifier = Modifier,
     onChatClick: (String) -> Unit
@@ -72,29 +75,29 @@ fun MainScreenChatsContent(
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacings.extraSmall)
                     ) {
-                        // 🔥 ИСПРАВЛЕНО: Используем items(uiState.chats) вместо items(size)
-                        // и передаем уникальный key для стабильности списка при скролле
                         items(
                             items = uiState.chats,
                             key = { chat -> chat.id }
                         ) { chatDoc ->
-
-                            // Реактивно подписываемся на последнее сообщение из Room
-                            val lastMessageEntity by remember(chatDoc.id) { getLastMessageFlow(chatDoc.id) }
+                            val lastMessageEntity by remember(chatDoc.id) {
+                                getLastMessageFlow(
+                                    chatDoc.id
+                                )
+                            }
                                 .collectAsState(initial = null)
-
+                            val unreadCount by remember(chatDoc.id) { getUnreadCountFlow(chatDoc.id) }
+                                .collectAsState(initial = 0)
                             val uids = chatDoc.id.split("_")
                             val isSelfChat = uids.size >= 2 && uids[0] == uids[1]
-
-                            // 🔥 ИСПРАВЛЕНО: Добавлен ключ chatDoc.id в remember.
-                            // Теперь при переиспользовании ячейки имя гарантированно сбросится на "Загрузка..."
                             var peerName by remember(chatDoc.id) {
                                 mutableStateOf(if (isSelfChat) "Избранное" else "Загрузка...")
                             }
 
                             if (!isSelfChat) {
                                 LaunchedEffect(chatDoc.id) {
-                                    val peerId = chatDoc.participantIds.firstOrNull { it != uiState.user.uid } ?: ""
+                                    val peerId =
+                                        chatDoc.participantIds.firstOrNull { it != uiState.user.uid }
+                                            ?: ""
                                     peerName = getPeerName(peerId)
                                 }
                             }
@@ -103,6 +106,12 @@ fun MainScreenChatsContent(
                                 lastMessageEntity != null -> lastMessageEntity!!.text
                                 isSelfChat -> "Чат с самим собой для заметок"
                                 else -> "Нажмите, чтобы открыть переписку"
+                            }
+                            val hasUnread = unreadCount > 0
+                            val messageTextColor = if (hasUnread) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
                             }
 
                             val isHandshakeComplete = isSelfChat ||
@@ -138,27 +147,58 @@ fun MainScreenChatsContent(
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
                                             text = peerName,
-                                            style = MaterialTheme.typography.titleMedium
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = if (hasUnread) FontWeight.Bold else FontWeight.Normal
                                         )
                                         Spacer(modifier = Modifier.height(2.dp))
                                         Text(
                                             text = lastMessageText,
                                             style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            color = messageTextColor,
+                                            fontWeight = if (hasUnread) FontWeight.Medium else FontWeight.Normal,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
                                     }
 
-                                    // Зеленый индикатор безопасного соединения
-                                    Box(
-                                        modifier = Modifier
-                                            .size(10.dp)
-                                            .background(
-                                                color = if (isHandshakeComplete) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
-                                                shape = androidx.compose.foundation.shape.CircleShape
-                                            )
-                                    )
+                                    Column(
+                                        horizontalAlignment = Alignment.End,
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        // Зеленая точка безопасного E2EE-соединения
+                                        val isHandshakeComplete = isSelfChat ||
+                                                (chatDoc.publicKeyUserA.isNotEmpty() && chatDoc.publicKeyUserB.isNotEmpty())
+                                        Box(
+                                            modifier = Modifier
+                                                .size(8.dp)
+                                                .background(
+                                                    color = if (isHandshakeComplete) Color(
+                                                        0xFF2E7D32
+                                                    ) else MaterialTheme.colorScheme.error,
+                                                    shape = CircleShape
+                                                )
+                                        )
+
+                                        if (hasUnread) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(22.dp)
+                                                    .background(
+                                                        color = MaterialTheme.colorScheme.primary,
+                                                        shape = CircleShape
+                                                    ),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = if (unreadCount > 99) "99+" else unreadCount.toString(),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onPrimary,
+                                                    fontWeight = FontWeight.Bold,
+                                                    textAlign = TextAlign.Center
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

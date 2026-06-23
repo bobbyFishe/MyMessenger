@@ -1,8 +1,16 @@
 package com.example.mymessenger.data.repository
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
+import android.os.Build
+import androidx.core.app.NotificationCompat
+import com.example.mymessenger.MainActivity
+import com.example.mymessenger.R
 import com.example.mymessenger.data.local.dao.ChatKeyDao
 import com.example.mymessenger.data.local.dao.MessageDao
 import com.example.mymessenger.data.local.entities.LocalMessageEntity
+import com.example.mymessenger.data.utils.Constants
 import com.example.mymessenger.data.utils.CryptoManager
 import com.example.mymessenger.domain.model.MessageDocument
 import com.example.mymessenger.domain.repository.ChatRepository
@@ -19,6 +27,7 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
 class ChatRepositoryImpl(
+    private val context: Context,
     private val firestore: FirebaseFirestore,
     private val messageDao: MessageDao,
     private val chatKeyDao: ChatKeyDao,
@@ -26,6 +35,55 @@ class ChatRepositoryImpl(
 ) : ChatRepository {
 
     private val activeListeners = mutableSetOf<String>()
+    @Volatile
+    private var currentActiveChatId: String? = null
+    private val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    private val CHANNEL_ID = "messenger_messages_channel"
+
+    init {
+        createNotificationChannel()
+    }
+
+    private fun createNotificationChannel() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val name = "Новые сообщения"
+                val descriptionText = "Уведомления о входящих зашифрованных сообщениях"
+                val importance = NotificationManager.IMPORTANCE_HIGH
+
+                val channel = NotificationChannel(CHANNEL_ID, name, importance).apply {
+                    description = descriptionText
+                    enableLights(true)
+                    enableVibration(true)
+                }
+                notificationManager.createNotificationChannel(channel)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ChatRepository", "❌ Не удалось создать канал уведомлений: ", e)
+        }
+    }
+
+
+
+    override fun setActiveChatId(chatId: String?) {
+        currentActiveChatId = chatId
+    }
+
+    override fun getActiveChatId(): String? = currentActiveChatId
+
+    override fun getUnreadCount(chatId: String): Flow<Int> = messageDao.getUnreadCountForChat(chatId)
+
+    override suspend fun markMessagesAsRead(chatId: String): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                messageDao.markChatAsRead(chatId)
+                notificationManager.cancel(chatId.hashCode())
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+    }
 
     override suspend fun sendMessage(chatId: String, text: String): Result<Unit> {
         return withContext(Dispatchers.IO) {
@@ -36,9 +94,9 @@ class ChatRepositoryImpl(
                 val uids = chatId.split("_")
                 val isSelfChat = uids.size >= 2 && uids[0] == uids[1] && uids[0] == myId
 
-                val messageId = firestore.collection("chats")
+                val messageId = firestore.collection(Constants.FIRESTORE_CHATS)
                     .document(chatId)
-                    .collection("messages")
+                    .collection(Constants.FIRESTORE_MESSAGES)
                     .document()
                     .id
 
@@ -49,7 +107,8 @@ class ChatRepositoryImpl(
                         senderId = myId,
                         text = text,
                         timestamp = System.currentTimeMillis(),
-                        isMine = true
+                        isMine = true,
+                        isRead = true
                     )
                 )
                 if (isSelfChat) {
@@ -79,9 +138,9 @@ class ChatRepositoryImpl(
                 timestamp = System.currentTimeMillis()
             )
 
-            firestore.collection("chats")
+            firestore.collection(Constants.FIRESTORE_CHATS)
                 .document(chatId)
-                .collection("messages")
+                .collection(Constants.FIRESTORE_MESSAGES)
                 .document(messageId)
                 .set(msgDoc)
                 .await()
@@ -116,9 +175,9 @@ class ChatRepositoryImpl(
             close()
             return@callbackFlow
         }
-        val listener = firestore.collection("chats")
+        val listener = firestore.collection(Constants.FIRESTORE_CHATS)
             .document(chatId)
-            .collection("messages")
+            .collection(Constants.FIRESTORE_MESSAGES)
             .addSnapshotListener { snapshot, error ->
                 if (error != null || snapshot == null) return@addSnapshotListener
 
@@ -148,7 +207,8 @@ class ChatRepositoryImpl(
 
             val keyEntity = chatKeyDao.getKeyForChat(chatId) ?: return
             val decryptedText = CryptoManager.decrypt(remoteMsg.encryptedText, keyEntity.privateKey)
-
+            val isUserReadingThisChatRightNow = (chatId == currentActiveChatId)
+            android.util.Log.d("ChatRepository", "📱 Входящий chatId=$chatId | Активный в трекере=$currentActiveChatId | Итог проверки=$isUserReadingThisChatRightNow")
             messageDao.insertMessage(
                 LocalMessageEntity(
                     id = remoteMsg.id,
@@ -156,9 +216,14 @@ class ChatRepositoryImpl(
                     senderId = remoteMsg.senderId,
                     text = decryptedText,
                     timestamp = System.currentTimeMillis(),
-                    isMine = false
+                    isMine = false,
+                    isRead = isUserReadingThisChatRightNow
                 )
             )
+
+            if (!isUserReadingThisChatRightNow) {
+                showLocalNotification(chatId, remoteMsg.senderId, decryptedText)
+            }
 
             try {
                 doc.reference.delete().await()
@@ -170,6 +235,37 @@ class ChatRepositoryImpl(
         }
     }
 
+    private fun showLocalNotification(chatId: String, senderId: String, text: String) {
+        CoroutineScope(Dispatchers.IO).launch {
+            val cachedContact = userRepository.getCachedContact(senderId)
+            val senderName = cachedContact?.name ?: "Новое сообщение"
+            val intent = android.content.Intent(context, MainActivity::class.java).apply {
+                flags = android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra("CHAT_ID", chatId)
+            }
+
+            val pendingIntent = android.app.PendingIntent.getActivity(
+                context,
+                chatId.hashCode(),
+                intent,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+            val defaultSoundUri = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION)
+            val notificationBuilder = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setContentTitle(senderName)
+                .setContentText(text)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .setSound(defaultSoundUri)
+                .setVibrate(longArrayOf(0, 250, 100, 250))
+                .setDefaults(NotificationCompat.DEFAULT_ALL)
+
+            notificationManager.notify(chatId.hashCode(), notificationBuilder.build())
+        }
+    }
 
     override suspend fun getMessagesSync(chatId: String): List<LocalMessageEntity> =
         withContext(Dispatchers.IO) { messageDao.getLastMessagesSync(chatId, 1000) }

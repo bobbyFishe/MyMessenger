@@ -14,4 +14,8 @@ interface ChatRepository {
     suspend fun flushUnsentMessages(chatId: String): Result<Unit>
     fun startMessagesTransit(chatId: String): Flow<Unit>
     suspend fun markMessageAsRead(messageId: String): Result<Unit>
+    fun getUnreadCount(chatId: String): Flow<Int>
+    suspend fun markMessagesAsRead(chatId: String): Result<Unit>
+    fun setActiveChatId(chatId: String?)
+    fun getActiveChatId(): String?
 }
