@@ -16,6 +16,7 @@ import com.example.mymessenger.domain.model.MessageDocument
 import com.example.mymessenger.domain.repository.ChatRepository
 import com.example.mymessenger.domain.repository.UserRepository
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -94,6 +95,62 @@ class ChatRepositoryImpl(
                 val uids = chatId.split("_")
                 val isSelfChat = uids.size >= 2 && uids[0] == uids[1] && uids[0] == myId
 
+                // Генерируем случайный бесплатный ID для сообщения на основе RTDB
+                val rtdb = com.google.firebase.database.FirebaseDatabase.getInstance().reference
+                val messageId = rtdb.child("transit_messages").child(chatId).push().key
+                    ?: return@withContext Result.failure(Exception("FAILED_TO_GENERATE_ID"))
+
+                // Сохраняем в локальный Room для UI
+                messageDao.insertMessage(
+                    LocalMessageEntity(
+                        id = messageId,
+                        chatId = chatId,
+                        senderId = myId,
+                        text = text,
+                        timestamp = System.currentTimeMillis(),
+                        isMine = true,
+                        isRead = true
+                    )
+                )
+
+                if (isSelfChat) {
+                    return@withContext Result.success(Unit)
+                }
+
+                // Шифруем RSA и отправляем в Realtime Database
+                val peerPublicKey = userRepository.getCachedPeerPublicKey(chatId, myId)
+                    ?: return@withContext Result.failure(Exception("PEER_KEY_NOT_FOUND"))
+                val encryptedText = CryptoManager.encrypt(text, peerPublicKey)
+
+                val msgMap = mapOf(
+                    "id" to messageId,
+                    "chatId" to chatId,
+                    "senderId" to myId,
+                    "encryptedText" to encryptedText,
+                    "timestamp" to System.currentTimeMillis()
+                )
+
+                rtdb.child("transit_messages").child(chatId).child(messageId)
+                    .setValue(msgMap)
+                    .await()
+
+                Result.success(Unit)
+            } catch (e: Exception) {
+                android.util.Log.e("ChatRepository", "❌ sendMessage error RTDB", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    suspend fun sendMessage_old(chatId: String, text: String): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val myId = FirebaseAuth.getInstance().currentUser?.uid
+                    ?: return@withContext Result.failure(Exception("NO_SESSION"))
+
+                val uids = chatId.split("_")
+                val isSelfChat = uids.size >= 2 && uids[0] == uids[1] && uids[0] == myId
+
                 val messageId = firestore.collection(Constants.FIRESTORE_CHATS)
                     .document(chatId)
                     .collection(Constants.FIRESTORE_MESSAGES)
@@ -149,8 +206,83 @@ class ChatRepositoryImpl(
         }
     }
 
-
     override fun startP2PDeliveryEngine(chatId: String): Flow<Unit> = callbackFlow {
+        if (activeListeners.contains(chatId)) {
+            close()
+            return@callbackFlow
+        }
+
+        val myId = FirebaseAuth.getInstance().currentUser?.uid
+        if (myId == null) {
+            close()
+            return@callbackFlow
+        }
+
+        val uids = chatId.split("_")
+        if (uids.size < 2 || (uids[0] == uids[1] && uids[0] == myId)) {
+            close()
+            return@callbackFlow
+        }
+
+        activeListeners.add(chatId)
+
+        val rtdb = com.google.firebase.database.FirebaseDatabase.getInstance().reference
+        val chatRef = rtdb.child("transit_messages").child(chatId)
+
+        val childListener = object : com.google.firebase.database.ChildEventListener {
+            override fun onChildAdded(snapshot: com.google.firebase.database.DataSnapshot, previousChildName: String?) {
+                val msgId = snapshot.child("id").value as? String ?: return
+                val senderId = snapshot.child("senderId").value as? String ?: return
+                val encryptedText = snapshot.child("encryptedText").value as? String ?: return
+
+                if (senderId == myId) return
+
+                launch(Dispatchers.IO) {
+                    try {
+                        val keyEntity = chatKeyDao.getKeyForChat(chatId) ?: return@launch
+                        val decryptedText = CryptoManager.decrypt(encryptedText, keyEntity.privateKey)
+
+                        val isUserReadingThisChatRightNow = (chatId == currentActiveChatId)
+
+                        messageDao.insertMessage(
+                            LocalMessageEntity(
+                                id = msgId,
+                                chatId = chatId,
+                                senderId = senderId,
+                                text = decryptedText,
+                                timestamp = System.currentTimeMillis(),
+                                isMine = false,
+                                isRead = isUserReadingThisChatRightNow
+                            )
+                        )
+
+                        snapshot.ref.removeValue()
+
+                        if (!isUserReadingThisChatRightNow) {
+                            showLocalNotification(chatId, senderId, decryptedText)
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.e("ChatRepository", "❌ Ошибка обработки СМС в RTDB", e)
+                    }
+                }
+            }
+
+            override fun onChildChanged(snapshot: com.google.firebase.database.DataSnapshot, previousChildName: String?) {}
+            override fun onChildRemoved(snapshot: com.google.firebase.database.DataSnapshot) {}
+            override fun onChildMoved(snapshot: com.google.firebase.database.DataSnapshot, previousChildName: String?) {}
+            override fun onCancelled(error: com.google.firebase.database.DatabaseError) {}
+        }
+
+        chatRef.addChildEventListener(childListener)
+
+        awaitClose {
+            activeListeners.remove(chatId)
+            chatRef.removeEventListener(childListener)
+        }
+    }
+
+
+    fun startP2PDeliveryEngine_old(chatId: String): Flow<Unit> = callbackFlow {
         if (activeListeners.contains(chatId)) {
             close()
             return@callbackFlow
@@ -180,9 +312,10 @@ class ChatRepositoryImpl(
             .collection(Constants.FIRESTORE_MESSAGES)
             .addSnapshotListener { snapshot, error ->
                 if (error != null || snapshot == null) return@addSnapshotListener
+                if (snapshot.metadata.isFromCache) return@addSnapshotListener
 
                 snapshot.documentChanges.forEach { change ->
-                    if (change.type == com.google.firebase.firestore.DocumentChange.Type.ADDED) {
+                    if (change.type == DocumentChange.Type.ADDED) {
                         launch(Dispatchers.IO) {
                             processIncomingMessage(change.document, chatId, myId)
                         }
@@ -220,20 +353,20 @@ class ChatRepositoryImpl(
                     isRead = isUserReadingThisChatRightNow
                 )
             )
-
-            if (!isUserReadingThisChatRightNow) {
-                showLocalNotification(chatId, remoteMsg.senderId, decryptedText)
-            }
-
             try {
                 doc.reference.delete().await()
             } catch (e: Exception) {
-                android.util.Log.e("ChatRepository", "❌ Failed to delete from Firestore", e)
+                android.util.Log.e("ChatRepository", "❌ Ошибка удаления документа", e)
+            }
+
+            if (!isUserReadingThisChatRightNow) {
+                showLocalNotification(chatId, remoteMsg.senderId, decryptedText)
             }
         } catch (e: Exception) {
             android.util.Log.e("ChatRepository", "❌ processIncomingMessage error", e)
         }
     }
+
 
     private fun showLocalNotification(chatId: String, senderId: String, text: String) {
         CoroutineScope(Dispatchers.IO).launch {
