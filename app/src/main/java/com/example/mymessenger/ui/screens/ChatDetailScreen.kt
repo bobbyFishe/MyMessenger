@@ -67,6 +67,8 @@ fun ChatDetailScreen(
     val lazyListState = rememberLazyListState(initialFirstVisibleItemIndex = 0)
     val previousMessageCount = remember { mutableIntStateOf(0) }
 
+    val context = androidx.compose.ui.platform.LocalContext.current
+
     LaunchedEffect(chatId) {
         viewModel.initChat(chatId)
     }
@@ -94,6 +96,20 @@ fun ChatDetailScreen(
                 if (currentCount > prevCount) {
                     val newestMessage = messages.first()
                     val isMyMessage = newestMessage.senderId == myId
+
+                    try {
+                        if (isMyMessage) {
+                            val mediaPlayer = android.media.MediaPlayer.create(context, R.raw.outgoing_sound)
+                            mediaPlayer.setOnCompletionListener { mp -> mp.release() }
+                            mediaPlayer.start()
+                        } else if (prevCount > 0) {
+                            val mediaPlayer = android.media.MediaPlayer.create(context, R.raw.incoming_sound)
+                            mediaPlayer.setOnCompletionListener { mp -> mp.release() }
+                            mediaPlayer.start()
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.e("ChatDetailScreen", "❌ Ошибка проигрывания звука", e)
+                    }
 
                     val isNearBottom = lazyListState.firstVisibleItemIndex <= 2
 

@@ -73,6 +73,15 @@ fun LoginScreen(
     LaunchedEffect(resultState.value) {
         when (val state = resultState.value) {
             is LoginResultState.Success -> {
+                try {
+                    val mediaPlayer = android.media.MediaPlayer.create(context, R.raw.login_success_sound)
+                    mediaPlayer.setOnCompletionListener { mp ->
+                        mp.release()
+                    }
+                    mediaPlayer.start()
+                } catch (e: Exception) {
+                    android.util.Log.e("LoginScreen", "❌ Ошибка проигрывания звука успеха", e)
+                }
                 onSuccess()
             }
 
