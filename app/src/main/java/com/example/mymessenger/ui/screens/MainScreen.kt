@@ -33,7 +33,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.mymessenger.R
 import com.example.mymessenger.data.local.entities.LocalMessageEntity
 import com.example.mymessenger.domain.model.ChatDocument
@@ -42,7 +41,6 @@ import com.example.mymessenger.ui.theme.MyMessengerTheme
 import com.example.mymessenger.ui.viewmodel.MainUiState
 import com.example.mymessenger.ui.viewmodel.MainViewModel
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import org.koin.androidx.compose.koinViewModel
 
@@ -66,7 +64,6 @@ fun MainScreen(
             permissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
     }
-
     MainScreenContent(
         uiState = uiState,
         searchError = searchError,
@@ -110,7 +107,6 @@ fun MainScreenContent(
             onDismissSearch()
         }
     }
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -145,7 +141,6 @@ fun MainScreenContent(
                 }
             )
         },
-
         floatingActionButton = {
             if (uiState is MainUiState.Success) {
                 FloatingActionButton(
@@ -169,7 +164,6 @@ fun MainScreenContent(
             modifier = Modifier.padding(innerPadding),
             onChatClick = onChatClick
         )
-
         if (isShowSearchDialog) {
             AlertDialog(
                 onDismissRequest = {

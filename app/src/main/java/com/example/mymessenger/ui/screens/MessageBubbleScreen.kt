@@ -1,32 +1,24 @@
 package com.example.mymessenger.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Done
-import androidx.compose.material.icons.filled.DoneAll
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.mymessenger.data.local.entities.LocalMessageEntity
+import com.example.mymessenger.ui.theme.spacings
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-// MessageBubbleScreen.kt
 @Composable
 fun MessageBubble(
     message: LocalMessageEntity,
@@ -34,7 +26,7 @@ fun MessageBubble(
 ) {
     Column(
         horizontalAlignment = if (isMyMessage) Alignment.End else Alignment.Start,
-        modifier = Modifier.padding(vertical = 2.dp)
+        modifier = Modifier.padding(vertical = MaterialTheme.spacings.default)
     ) {
         Box(
             modifier = Modifier
@@ -44,13 +36,13 @@ fun MessageBubble(
                     else
                         MaterialTheme.colorScheme.secondaryContainer,
                     shape = RoundedCornerShape(
-                        topStart = 12.dp,
-                        topEnd = 12.dp,
-                        bottomStart = if (isMyMessage) 12.dp else 0.dp,
-                        bottomEnd = if (isMyMessage) 0.dp else 12.dp
+                        topStart = MaterialTheme.spacings.medium,
+                        topEnd = MaterialTheme.spacings.medium,
+                        bottomStart = if (isMyMessage) MaterialTheme.spacings.medium else MaterialTheme.spacings.default,
+                        bottomEnd = if (isMyMessage) MaterialTheme.spacings.default else MaterialTheme.spacings.medium
                     )
                 )
-                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .padding(horizontal = MaterialTheme.spacings.medium, vertical = MaterialTheme.spacings.small)
         ) {
             Text(
                 text = message.text,
@@ -63,7 +55,7 @@ fun MessageBubble(
         }
 
         Row(
-            modifier = Modifier.padding(top = 2.dp),
+            modifier = Modifier.padding(top = MaterialTheme.spacings.extraSmall),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(

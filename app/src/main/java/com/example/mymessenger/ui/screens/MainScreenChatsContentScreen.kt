@@ -54,7 +54,6 @@ fun MainScreenChatsContent(
     ) {
         when (uiState) {
             is MainUiState.Loading -> CircularProgressIndicator()
-
             is MainUiState.Error -> {
                 Text(
                     text = stringResource(uiState.messageResId),
@@ -92,7 +91,6 @@ fun MainScreenChatsContent(
                             var peerName by remember(chatDoc.id) {
                                 mutableStateOf(if (isSelfChat) "Избранное" else "Загрузка...")
                             }
-
                             if (!isSelfChat) {
                                 LaunchedEffect(chatDoc.id) {
                                     val peerId =
@@ -101,7 +99,6 @@ fun MainScreenChatsContent(
                                     peerName = getPeerName(peerId)
                                 }
                             }
-
                             val lastMessageText = when {
                                 lastMessageEntity != null -> lastMessageEntity!!.text
                                 isSelfChat -> "Чат с самим собой для заметок"
@@ -113,10 +110,6 @@ fun MainScreenChatsContent(
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             }
-
-                            val isHandshakeComplete = isSelfChat ||
-                                    (chatDoc.publicKeyUserA.isNotEmpty() && chatDoc.publicKeyUserB.isNotEmpty())
-
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 onClick = { onChatClick(chatDoc.id) }
@@ -133,7 +126,7 @@ fun MainScreenChatsContent(
                                             .size(48.dp)
                                             .background(
                                                 color = MaterialTheme.colorScheme.primaryContainer,
-                                                shape = androidx.compose.foundation.shape.CircleShape
+                                                shape = CircleShape
                                             ),
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -143,7 +136,6 @@ fun MainScreenChatsContent(
                                             color = MaterialTheme.colorScheme.onPrimaryContainer
                                         )
                                     }
-
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
                                             text = peerName,
@@ -160,12 +152,10 @@ fun MainScreenChatsContent(
                                             overflow = TextOverflow.Ellipsis
                                         )
                                     }
-
                                     Column(
                                         horizontalAlignment = Alignment.End,
                                         verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        // Зеленая точка безопасного E2EE-соединения
                                         val isHandshakeComplete = isSelfChat ||
                                                 (chatDoc.publicKeyUserA.isNotEmpty() && chatDoc.publicKeyUserB.isNotEmpty())
                                         Box(
@@ -178,7 +168,6 @@ fun MainScreenChatsContent(
                                                     shape = CircleShape
                                                 )
                                         )
-
                                         if (hasUnread) {
                                             Box(
                                                 modifier = Modifier

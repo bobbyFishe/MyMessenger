@@ -146,8 +146,8 @@ fun RegisterScreenContent(
                 trailingIcon = {
                     if (isNameChecking) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            strokeWidth = 2.dp
+                            modifier = Modifier.size(MaterialTheme.spacings.large),
+                            strokeWidth = MaterialTheme.spacings.extraSmall
                         )
                     } else {
                         IconButton(onClick = generateRandomName) {
@@ -189,7 +189,7 @@ fun RegisterScreenContent(
                                     imageVector = Icons.Default.CheckCircle,
                                     contentDescription = null,
                                     tint = Color(0xFF2E7D32),
-                                    modifier = Modifier.size(16.dp)
+                                    modifier = Modifier.size(MaterialTheme.spacings.medium)
                                 )
                                 Text(
                                     text = stringResource(R.string.email_is_valid),
@@ -230,7 +230,6 @@ fun RegisterScreenContent(
                                 color = MaterialTheme.colorScheme.error
                             )
                         }
-
                         missingRequirements.isNotEmpty() -> {
                             val missingWords = missingRequirements.map { req ->
                                 when (req) {
@@ -239,8 +238,6 @@ fun RegisterScreenContent(
                                     else -> context.resources.getString(R.string.req_digit)
                                 }
                             }
-
-                            // Красиво соединяем слова через запятую (например: "большая буква, цифра")
                             val combinedRequirements = missingWords.joinToString(", ")
 
                             Text(
@@ -271,7 +268,12 @@ fun RegisterScreenContent(
                         }
 
                         else -> {
-                            Text(stringResource(R.string.minimum_characters, Constants.MIN_PASSWORD_LENGTH))
+                            Text(
+                                stringResource(
+                                    R.string.minimum_characters,
+                                    Constants.MIN_PASSWORD_LENGTH
+                                )
+                            )
                         }
                     }
                 },
@@ -302,17 +304,16 @@ fun RegisterScreenContent(
                                 color = MaterialTheme.colorScheme.error
                             )
                         }
-
                         uiState.passwordRepeat.isNotEmpty() && doPasswordsMatch -> {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacings.extraSmall)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.CheckCircle,
                                     contentDescription = null,
                                     tint = Color(0xFF2E7D32),
-                                    modifier = Modifier.size(16.dp)
+                                    modifier = Modifier.size(MaterialTheme.spacings.medium)
                                 )
                                 Text(
                                     text = stringResource(R.string.passwords_match_success),

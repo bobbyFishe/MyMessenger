@@ -75,15 +75,18 @@ fun LoginScreen(
             is LoginResultState.Success -> {
                 onSuccess()
             }
+
             is LoginResultState.ResetEmailSent -> {
                 snackBarHostState.showSnackbar(
                     message = context.resources.getString(R.string.reset_password_instruction),
                     duration = SnackbarDuration.Long
                 )
             }
+
             is LoginResultState.Error -> {
                 snackBarHostState.showSnackbar(context.resources.getString(state.messageResId))
             }
+
             else -> {}
         }
     }
@@ -134,13 +137,21 @@ fun LoginScreenContent(
                 .padding(MaterialTheme.spacings.large)
                 .verticalScroll(scrollState)
                 .imePadding(),
-            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacings.small, Alignment.CenterVertically),
+            verticalArrangement = Arrangement.spacedBy(
+                MaterialTheme.spacings.small,
+                Alignment.CenterVertically
+            ),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             OutlinedTextField(
                 value = uiState.email,
                 onValueChange = onEmailChange,
-                label = { Text(stringResource(R.string.email_label), style = MaterialTheme.typography.bodySmall) },
+                label = {
+                    Text(
+                        stringResource(R.string.email_label),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                },
                 placeholder = { Text(stringResource(R.string.email_placeholder)) },
                 singleLine = true,
                 isError = isEmailInvalid,
@@ -165,13 +176,19 @@ fun LoginScreenContent(
             OutlinedTextField(
                 value = uiState.password,
                 onValueChange = onPasswordChange,
-                label = { Text(stringResource(R.string.password_label), style = MaterialTheme.typography.bodySmall) },
+                label = {
+                    Text(
+                        stringResource(R.string.password_label),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                },
                 singleLine = true,
                 isError = isPasswordTooShort || missingRequirements.isNotEmpty(),
                 supportingText = {
                     when {
                         isPasswordTooShort -> {
-                            val symbolsLeft = Constants.MIN_PASSWORD_LENGTH - uiState.password.length
+                            val symbolsLeft =
+                                Constants.MIN_PASSWORD_LENGTH - uiState.password.length
                             Text(
                                 text = stringResource(R.string.password_hint_or_error, symbolsLeft),
                                 color = MaterialTheme.colorScheme.error
@@ -187,7 +204,10 @@ fun LoginScreenContent(
                             }
                             val combinedRequirements = missingWords.joinToString(", ")
                             Text(
-                                text = stringResource(R.string.password_missing_prefix, combinedRequirements),
+                                text = stringResource(
+                                    R.string.password_missing_prefix,
+                                    combinedRequirements
+                                ),
                                 color = MaterialTheme.colorScheme.error
                             )
                         }
@@ -200,7 +220,7 @@ fun LoginScreenContent(
                                     imageVector = Icons.Default.CheckCircle,
                                     contentDescription = null,
                                     tint = Color(0xFF2E7D32),
-                                    modifier = Modifier.size(16.dp)
+                                    modifier = Modifier.size(MaterialTheme.spacings.medium)
                                 )
                                 Text(
                                     text = stringResource(R.string.password_is_valid),
@@ -209,7 +229,12 @@ fun LoginScreenContent(
                             }
                         }
                         else -> {
-                            Text(stringResource(R.string.minimum_characters, Constants.MIN_PASSWORD_LENGTH))
+                            Text(
+                                stringResource(
+                                    R.string.minimum_characters,
+                                    Constants.MIN_PASSWORD_LENGTH
+                                )
+                            )
                         }
                     }
                 },
@@ -227,18 +252,21 @@ fun LoginScreenContent(
                 ),
                 modifier = Modifier.fillMaxWidth()
             )
-
             TextButton(
                 onClick = onResetPasswordClick,
                 modifier = Modifier.align(Alignment.End)
             ) {
-                Text(stringResource(R.string.forgot_password_button), style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    stringResource(R.string.forgot_password_button),
+                    style = MaterialTheme.typography.bodyMedium
+                )
             }
-
             Button(
                 onClick = onLoginClick,
                 enabled = isInputValid && resultState !is LoginResultState.Loading,
-                modifier = Modifier.fillMaxWidth().padding(top = 12.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = MaterialTheme.spacings.medium)
             ) {
                 if (resultState is LoginResultState.Loading) {
                     CircularProgressIndicator(color = MaterialTheme.colorScheme.onPrimary)
@@ -246,12 +274,14 @@ fun LoginScreenContent(
                     Text(stringResource(R.string.login_button))
                 }
             }
-
             TextButton(
                 onClick = onRegisterClick,
                 modifier = Modifier.padding(top = MaterialTheme.spacings.medium)
             ) {
-                Text(stringResource(R.string.no_account_link), style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    stringResource(R.string.no_account_link),
+                    style = MaterialTheme.typography.bodyLarge
+                )
             }
         }
     }

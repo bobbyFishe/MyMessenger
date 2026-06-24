@@ -35,6 +35,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,10 +62,10 @@ fun ChatDetailScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val messageText by viewModel.messageText.collectAsState()
-
     val myId = remember { FirebaseAuth.getInstance().currentUser?.uid ?: "" }
+
     val lazyListState = rememberLazyListState(initialFirstVisibleItemIndex = 0)
-    val latestMessageId = (uiState as? ChatDetailUiState.Success)?.messages?.firstOrNull()?.id
+    val previousMessageCount = remember { mutableIntStateOf(0) }
 
     LaunchedEffect(chatId) {
         viewModel.initChat(chatId)
@@ -76,29 +78,34 @@ fun ChatDetailScreen(
                 val savedPos = viewModel.getScrollPosition(chatId)
                 lazyListState.scrollToItem(savedPos ?: 0)
                 viewModel.markChatAsLoaded(chatId)
+                previousMessageCount.intValue = messages.size
             }
         }
     }
 
-    LaunchedEffect(latestMessageId) {
-        if (uiState is ChatDetailUiState.Success && latestMessageId != null) {
+    LaunchedEffect(uiState) {
+        if (uiState is ChatDetailUiState.Success) {
             val messages = (uiState as ChatDetailUiState.Success).messages
-            val isMyLastMessage = messages.first().senderId == myId
 
-            // Проверяем, находится ли пользователь внизу чата
-            val isAtBottom = lazyListState.firstVisibleItemIndex == 0
+            if (messages.isNotEmpty()) {
+                val currentCount = messages.size
+                val prevCount = previousMessageCount.value
 
-            if (isMyLastMessage || isAtBottom) {
-                // КРИТИЧЕСКИЙ ШАГ: Пропускаем один такт отрисовки Compose.
-                // Это даёт системе время высчитать высоту нового MessageBubble.
-                kotlinx.coroutines.yield()
+                if (currentCount > prevCount) {
+                    val newestMessage = messages.first()
+                    val isMyMessage = newestMessage.senderId == myId
 
-                // Жестко прижимаем список к самому низу (индексу 0)
-                lazyListState.scrollToItem(0)
+                    val isNearBottom = lazyListState.firstVisibleItemIndex <= 2
+
+                    if (isMyMessage || isNearBottom) {
+                        lazyListState.animateScrollToItem(0)
+                    }
+                }
+
+                previousMessageCount.value = currentCount
             }
         }
     }
-
 
     DisposableEffect(chatId) {
         onDispose {
@@ -172,6 +179,7 @@ fun ChatDetailContent(
 
                     is ChatDetailUiState.Success -> {
                         val messages = uiState.messages
+
                         LazyColumn(
                             state = lazyListState,
                             modifier = Modifier.fillMaxSize(),
