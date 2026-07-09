@@ -18,4 +18,6 @@ interface ChatRepository {
     suspend fun markMessagesAsRead(chatId: String): Result<Unit>
     fun setActiveChatId(chatId: String?)
     fun getActiveChatId(): String?
+    suspend fun regenerateKeysIfMissing(chatId: String): Result<Unit>
+
 }

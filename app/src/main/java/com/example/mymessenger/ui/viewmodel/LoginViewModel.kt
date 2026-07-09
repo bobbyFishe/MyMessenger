@@ -4,16 +4,21 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.mymessenger.R
 import com.example.mymessenger.data.utils.Constants
+import com.example.mymessenger.domain.repository.ChatRepository
 import com.example.mymessenger.domain.usecases.LoginWithEmailUseCase
 import com.example.mymessenger.domain.usecases.ResetPasswordUseCase
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
 import com.google.firebase.auth.FirebaseAuthInvalidUserException
+import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
 sealed interface LoginResultState {
     object Idle : LoginResultState
@@ -30,7 +35,8 @@ data class LoginUiState(
 
 class LoginViewModel(
     private val resetPasswordUseCase: ResetPasswordUseCase,
-    private val loginWithEmailUseCase: LoginWithEmailUseCase
+    private val loginWithEmailUseCase: LoginWithEmailUseCase,
+    private val chatRepository: ChatRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(LoginUiState())
@@ -107,11 +113,11 @@ class LoginViewModel(
 
         viewModelScope.launch {
             val state = _uiState.value
-
             val result = loginWithEmailUseCase(state.email.trim(), state.password)
-
             result.fold(
                 onSuccess = { _ ->
+                    setupUserOnlineStatus()
+                    refreshAllChatKeys()
                     _resultState.value = LoginResultState.Success
                 },
                 onFailure = { exception ->
@@ -121,7 +127,33 @@ class LoginViewModel(
             )
         }
     }
+
+    private suspend fun refreshAllChatKeys() {
+        try {
+            val myId = FirebaseAuth.getInstance().currentUser?.uid ?: return
+            val chatsSnapshot = FirebaseFirestore.getInstance()
+                .collection("chats")
+                .whereArrayContains("participantIds", myId)
+                .get()
+                .await()
+
+            for (doc in chatsSnapshot.documents) {
+                val chatId = doc.id
+                chatRepository.regenerateKeysIfMissing(chatId)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("LoginViewModel", "❌ Ошибка обновления ключей", e)
+        }
+    }
+
+    private fun setupUserOnlineStatus() {
+        val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
+        val statusRef = FirebaseDatabase.getInstance().reference.child("users/$uid/status")
+        statusRef.setValue("online")
+    }
 }
+
+
 
 private fun mapFirebaseExceptionToString(exception: Throwable): Int {
     return when (exception) {

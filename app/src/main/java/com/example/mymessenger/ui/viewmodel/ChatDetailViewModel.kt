@@ -6,6 +6,11 @@ import com.example.mymessenger.R
 import com.example.mymessenger.data.local.entities.LocalMessageEntity
 import com.example.mymessenger.data.utils.Constants
 import com.example.mymessenger.domain.repository.ChatRepository
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
+import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.ValueEventListener
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,14 +42,17 @@ class ChatDetailViewModel(
     private val CACHE_MESSAGE_LIMIT = 300
     private val scrollPositions = mutableMapOf<String, Int>()
     private val loadedChats = mutableSetOf<String>()
+    private val _isPeerOnline = MutableStateFlow(true)
+    val isPeerOnline: StateFlow<Boolean> = _isPeerOnline.asStateFlow()
+    private var statusListener: ValueEventListener? = null
 
     fun initChat(chatId: String) {
         if (currentChatId == chatId) return
 
         currentChatId = chatId
-            //_uiState.value = ChatDetailUiState.Loading
         chatRepository.setActiveChatId(chatId)
         viewModelScope.launch {
+            chatRepository.regenerateKeysIfMissing(chatId)
             chatRepository.markMessagesAsRead(chatId)
         }
 
@@ -77,8 +85,36 @@ class ChatDetailViewModel(
                     }
                 }
         }
+        observePeerStatus(chatId)
     }
 
+    private fun observePeerStatus(chatId: String) {
+        val uids = chatId.split("_")
+        val myId = FirebaseAuth.getInstance().currentUser?.uid ?: return
+        val peerId = uids.firstOrNull { it != myId } ?: return
+
+        val database = FirebaseDatabase.getInstance()
+        val statusRef = database.getReference("users/$peerId/status")
+
+        statusListener?.let { statusRef.removeEventListener(it) }
+
+        statusListener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val status = snapshot.getValue(String::class.java) ?: "online"
+
+                // ✅ ТОЛЬКО "offline" блокирует чат
+                _isPeerOnline.value = status != "offline"
+
+                android.util.Log.d("ChatDetailVM", "📡 Статус собеседника: $status")
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                android.util.Log.e("ChatDetailVM", "❌ Ошибка получения статуса", error.toException())
+            }
+        }
+
+        statusRef.addValueEventListener(statusListener!!)
+    }
     fun updateMessageText(newText: String) {
         if (newText.length <= Constants.MESSAGE_LENGTH) {
             _messageText.value = newText
@@ -111,6 +147,16 @@ class ChatDetailViewModel(
 
     override fun onCleared() {
         super.onCleared()
+        statusListener?.let { listener ->
+            // Удаляем слушатель
+            val uids = currentChatId?.split("_") ?: return
+            val myId = FirebaseAuth.getInstance().currentUser?.uid ?: return
+            val peerId = uids.firstOrNull { it != myId } ?: return
+
+            FirebaseDatabase.getInstance()
+                .getReference("users/$peerId/status")
+                .removeEventListener(listener)
+        }
         messageObservationJob?.cancel()
         if (chatRepository.getActiveChatId() == currentChatId) {
             chatRepository.setActiveChatId(null)

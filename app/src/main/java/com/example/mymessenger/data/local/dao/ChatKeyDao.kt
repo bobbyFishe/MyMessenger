@@ -16,4 +16,7 @@ interface ChatKeyDao {
 
     @Query("SELECT * FROM chat_keys")
     suspend fun getAllKeys(): List<ChatKeyEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertKey(chatKey: ChatKeyEntity): Long
 }

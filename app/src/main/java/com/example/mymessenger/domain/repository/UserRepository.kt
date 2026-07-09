@@ -17,4 +17,5 @@ interface UserRepository {
     suspend fun getCachedContact(uid: String): ContactEntity?
     suspend fun saveContact(contact: ContactEntity): Result<Unit>
     suspend fun getCachedPeerPublicKey(chatId: String, myId: String): String?
+    suspend fun sendStatusUpdate(userId: String, status: String)
 }

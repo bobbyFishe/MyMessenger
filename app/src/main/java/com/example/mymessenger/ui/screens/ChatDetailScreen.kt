@@ -1,5 +1,6 @@
 package com.example.mymessenger.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -68,6 +69,7 @@ fun ChatDetailScreen(
     val previousMessageCount = remember { mutableIntStateOf(0) }
 
     val context = androidx.compose.ui.platform.LocalContext.current
+    val isPeerOnline by viewModel.isPeerOnline.collectAsState()
 
     LaunchedEffect(chatId) {
         viewModel.initChat(chatId)
@@ -137,7 +139,8 @@ fun ChatDetailScreen(
         lazyListState = lazyListState,
         onMessageTextChange = { viewModel.updateMessageText(it) },
         onSendClick = { viewModel.sendMessage() },
-        onBackClick = onBackClick
+        onBackClick = onBackClick,
+        isPeerOnline = isPeerOnline,
     )
 }
 
@@ -150,7 +153,8 @@ fun ChatDetailContent(
     lazyListState: LazyListState,
     onMessageTextChange: (String) -> Unit,
     onSendClick: () -> Unit,
-    onBackClick: () -> Unit
+    onBackClick: () -> Unit,
+    isPeerOnline: Boolean = true,
 ) {
     Scaffold(
         topBar = {
@@ -229,7 +233,25 @@ fun ChatDetailContent(
                     }
                 }
             }
-
+            when {
+                !isPeerOnline -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.errorContainer)
+                            .padding(vertical = 8.dp, horizontal = 16.dp)
+                    ) {
+                        Text(
+                            text = "🔴 Пользователь вышел из аккаунта. Сообщения не доставляются",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+                }
+                else -> {
+                    // 🟢 ПОЛЬЗОВАТЕЛЬ ОНЛАЙН → НИЧЕГО НЕ ПОКАЗЫВАЕМ
+                }
+            }
             Surface(
                 tonalElevation = MaterialTheme.spacings.extraSmall,
                 modifier = Modifier.fillMaxWidth()
@@ -249,6 +271,7 @@ fun ChatDetailContent(
                         onValueChange = onMessageTextChange,
                         placeholder = { Text(stringResource(R.string.message_placeholder)) },
                         maxLines = 4,
+                        enabled = isPeerOnline,
                         keyboardOptions = KeyboardOptions(
                             keyboardType = KeyboardType.Text,
                             imeAction = ImeAction.Send

@@ -1,5 +1,6 @@
 <<<<<<< HEAD
 *.iml
+**/service_account.json
 .gradle
 /local.properties
 /.idea/caches

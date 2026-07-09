@@ -44,4 +44,19 @@ object CryptoManager {
             "[Ошибка расшифровки сообщения]"
         }
     }
+
+    fun generateKeyPair(): java.security.KeyPair {
+        val keyPairGenerator = java.security.KeyPairGenerator.getInstance(ALGORITHM)
+        keyPairGenerator.initialize(2048)
+        return keyPairGenerator.generateKeyPair()
+    }
+
+    fun publicKeyToString(publicKey: java.security.PublicKey): String {
+        return Base64.encodeToString(publicKey.encoded, Base64.NO_WRAP)
+    }
+
+    fun privateKeyToString(privateKey: java.security.PrivateKey): String {
+        return Base64.encodeToString(privateKey.encoded, Base64.NO_WRAP)
+    }
+
 }

@@ -15,6 +15,9 @@ import com.example.mymessenger.data.local.entities.ChatEntity
 import com.example.mymessenger.data.local.entities.ChatKeyEntity
 import com.example.mymessenger.data.local.entities.ContactEntity
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.messaging.FirebaseMessaging
+import com.google.firebase.messaging.RemoteMessage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -118,15 +121,12 @@ class UserRepositoryImpl(
             val idList = if (isSelfChat) listOf(myId, myId) else listOf(myId, peerId).sorted()
             val chatId = idList.joinToString("_")
 
-            // 1. Проверяем локальную Room
             val hasLocalKey = chatKeyDao.getKeyForChat(chatId) != null
             val hasLocalChat = chatDao.getChatById(chatId) != null
 
             if (hasLocalKey && hasLocalChat) {
                 return Result.success(Unit)
             }
-
-            // 2. ОПТИМИЗАЦИЯ: В Firestore идем ТОЛЬКО если это не чат с самим собой
             if (!isSelfChat) {
                 val chatSnapshot = firestore.collection("chats")
                     .document(chatId)
@@ -150,7 +150,6 @@ class UserRepositoryImpl(
                 }
             }
 
-            // 3. Создаем новый чат и генерируем RSA ключи
             val kpg = KeyPairGenerator.getInstance("RSA")
             kpg.initialize(2048)
             val kp = kpg.generateKeyPair()
@@ -158,15 +157,12 @@ class UserRepositoryImpl(
             val myPublicKeyString = Base64.encodeToString(kp.public.encoded, Base64.NO_WRAP)
             val myPrivateKeyString = Base64.encodeToString(kp.private.encoded, Base64.NO_WRAP)
 
-            // 4. Сохраняем закрытый ключ в Room
             chatKeyDao.saveKey(
                 ChatKeyEntity(
                     chatId = chatId,
                     privateKey = myPrivateKeyString
                 )
             )
-
-            // 5. Формируем документ для Firestore и Room
             val chatDoc = if (isSelfChat) {
                 ChatDocument(
                     id = chatId,
@@ -185,8 +181,6 @@ class UserRepositoryImpl(
                     createdAt = System.currentTimeMillis()
                 )
             }
-
-            // 6. Записываем кэш чата в Room
             chatDao.saveChat(
                 ChatEntity(
                     id = chatDoc.id,
@@ -196,8 +190,6 @@ class UserRepositoryImpl(
                     createdAt = chatDoc.createdAt
                 )
             )
-
-            // 7. Отправляем публичные метаданные в Firestore
             firestore.collection("chats")
                 .document(chatId)
                 .set(chatDoc)
@@ -212,7 +204,6 @@ class UserRepositoryImpl(
 
 
     override fun observeUserChatsWithCache(currentUid: String): Flow<List<ChatDocument>> = callbackFlow {
-        // 1. Настраиваем слушатель обновлений из сети (Firestore)
         val listener = firestore.collection("chats")
             .whereArrayContains("participantIds", currentUid)
             .addSnapshotListener { snapshot, error ->
@@ -221,11 +212,8 @@ class UserRepositoryImpl(
                 val chatDocs = snapshot.documents.mapNotNull { doc ->
                     doc.toObject(ChatDocument::class.java)
                 }
-
-                // Синхронизируем изменения с Room на фоновом потоке
                 launch(Dispatchers.IO) {
                     try {
-                        // Используем маппинг. Room сам обновит измененные чаты благодаря OnConflictStrategy.REPLACE
                         val entities = chatDocs.map { doc ->
                             ChatEntity(
                                 id = doc.id,
@@ -235,15 +223,12 @@ class UserRepositoryImpl(
                                 createdAt = doc.createdAt
                             )
                         }
-                        chatDao.saveChats(entities) // Предполагается, что тут внутри @Insert(onConflict = REPLACE)
+                        chatDao.saveChats(entities)
                     } catch (e: Exception) {
                         android.util.Log.e("UserRepository", "❌ Error syncing chats to Room", e)
                     }
                 }
             }
-
-        // 2. 🔥 ЕДИНСТВЕННЫЙ ИСТОЧНИК ПРАВДЫ ДЛЯ UI — ЭТО ROOM
-        // Мы просто перенаправляем поток из локальной базы прямо в этот callbackFlow
         val cacheJob = launch(Dispatchers.IO) {
             chatDao.getChats().collect { chatEntities ->
                 val chatDocs = chatEntities.map { entity ->
@@ -255,7 +240,7 @@ class UserRepositoryImpl(
                         createdAt = entity.createdAt
                     )
                 }
-                trySend(chatDocs) // UI мгновенно получает кэш, а затем актуальные данные, когда Room обновится сетью
+                trySend(chatDocs)
             }
         }
 
@@ -403,5 +388,41 @@ class UserRepositoryImpl(
         }
     }
 
+    override suspend fun sendStatusUpdate(userId: String, status: String) {
+        withContext(Dispatchers.IO) {
+            try {
+                val chatsSnapshot = firestore.collection("chats")
+                    .whereArrayContains("participantIds", userId)
+                    .get()
+                    .await()
 
+                val rtdb = FirebaseDatabase.getInstance().reference
+
+                for (doc in chatsSnapshot.documents) {
+                    val chatId = doc.id
+                    val participants = doc.get("participantIds") as? List<String> ?: continue
+                    val peerId = participants.firstOrNull { it != userId } ?: continue
+
+                    val tokenSnapshot = rtdb.child("users/$peerId/fcmToken").get().await()
+                    val token = tokenSnapshot.getValue(String::class.java) ?: continue
+                    val type = if (status == "offline") "USER_OFFLINE" else "USER_ONLINE"
+                    val message = RemoteMessage.Builder(token)
+                        .setData(
+                            mapOf(
+                                "type" to type,
+                                "chatId" to chatId,
+                                "senderId" to userId,
+                                "status" to status
+                            )
+                        )
+                        .build()
+
+                    FirebaseMessaging.getInstance().send(message)
+                    android.util.Log.d("UserRepository", "📨 Статус $status отправлен для чата $chatId")
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("UserRepository", "❌ Ошибка отправки статуса", e)
+            }
+        }
+    }
 }

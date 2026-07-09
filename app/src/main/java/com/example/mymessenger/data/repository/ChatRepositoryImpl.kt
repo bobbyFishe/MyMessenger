@@ -10,14 +10,18 @@ import com.example.mymessenger.R
 import com.example.mymessenger.data.local.dao.ChatKeyDao
 import com.example.mymessenger.data.local.dao.MessageDao
 import com.example.mymessenger.data.local.entities.LocalMessageEntity
-import com.example.mymessenger.data.utils.Constants
 import com.example.mymessenger.data.utils.CryptoManager
-import com.example.mymessenger.domain.model.MessageDocument
 import com.example.mymessenger.domain.repository.ChatRepository
 import com.example.mymessenger.domain.repository.UserRepository
+import com.google.auth.oauth2.GoogleCredentials
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.DocumentChange
+import com.google.firebase.database.ChildEventListener
+import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
+import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.messaging.FirebaseMessaging
+import com.google.firebase.messaging.RemoteMessage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
@@ -26,6 +30,12 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.OkHttpClient
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import java.io.ByteArrayInputStream
+import java.nio.charset.StandardCharsets
 
 class ChatRepositoryImpl(
     private val context: Context,
@@ -36,10 +46,15 @@ class ChatRepositoryImpl(
 ) : ChatRepository {
 
     private val activeListeners = mutableSetOf<String>()
-    @Volatile
-    private var currentActiveChatId: String? = null
-    private val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+    companion object {
+        @Volatile
+        var currentActiveChatId: String? = null
+    }
+    private val notificationManager =
+        context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     private val CHANNEL_ID = "messenger_messages_channel"
+    private val rtdb = FirebaseDatabase.getInstance().reference
 
     init {
         createNotificationChannel()
@@ -65,14 +80,17 @@ class ChatRepositoryImpl(
     }
 
 
-
     override fun setActiveChatId(chatId: String?) {
-        currentActiveChatId = chatId
+        Companion.currentActiveChatId = chatId
+        if (chatId != null) {
+            notificationManager.cancel(chatId.hashCode())
+        }
     }
 
-    override fun getActiveChatId(): String? = currentActiveChatId
+    override fun getActiveChatId(): String? = Companion.currentActiveChatId
 
-    override fun getUnreadCount(chatId: String): Flow<Int> = messageDao.getUnreadCountForChat(chatId)
+    override fun getUnreadCount(chatId: String): Flow<Int> =
+        messageDao.getUnreadCountForChat(chatId)
 
     override suspend fun markMessagesAsRead(chatId: String): Result<Unit> {
         return withContext(Dispatchers.IO) {
@@ -94,13 +112,26 @@ class ChatRepositoryImpl(
 
                 val uids = chatId.split("_")
                 val isSelfChat = uids.size >= 2 && uids[0] == uids[1] && uids[0] == myId
+                if (!isSelfChat) {
+                    val peerId = uids.firstOrNull { it != myId } ?: return@withContext Result.failure(Exception("PEER_NOT_FOUND"))
+
+                    // ✅ Проверяем статус получателя
+                    val statusSnapshot = rtdb.child("users/$peerId/status").get().await()
+                    val status = statusSnapshot.getValue(String::class.java) ?: "online"
+
+                    // ✅ БЛОКИРУЕМ ТОЛЬКО ЕСЛИ СТАТУС "offline"
+                    if (status == "offline") {
+                        android.util.Log.d("ChatRepository", "📴 Пользователь вышел из аккаунта, сообщение не отправлено")
+                        return@withContext Result.failure(Exception("RECIPIENT_OFFLINE"))
+                    }
+                    android.util.Log.d("ChatRepository", "📨 Статус получателя: $status, отправляем")
+                }
 
                 // Генерируем случайный бесплатный ID для сообщения на основе RTDB
-                val rtdb = com.google.firebase.database.FirebaseDatabase.getInstance().reference
+                val rtdb = FirebaseDatabase.getInstance().reference
                 val messageId = rtdb.child("transit_messages").child(chatId).push().key
                     ?: return@withContext Result.failure(Exception("FAILED_TO_GENERATE_ID"))
 
-                // Сохраняем в локальный Room для UI
                 messageDao.insertMessage(
                     LocalMessageEntity(
                         id = messageId,
@@ -117,7 +148,6 @@ class ChatRepositoryImpl(
                     return@withContext Result.success(Unit)
                 }
 
-                // Шифруем RSA и отправляем в Realtime Database
                 val peerPublicKey = userRepository.getCachedPeerPublicKey(chatId, myId)
                     ?: return@withContext Result.failure(Exception("PEER_KEY_NOT_FOUND"))
                 val encryptedText = CryptoManager.encrypt(text, peerPublicKey)
@@ -133,6 +163,8 @@ class ChatRepositoryImpl(
                 rtdb.child("transit_messages").child(chatId).child(messageId)
                     .setValue(msgMap)
                     .await()
+                sendFcmViaHttp(chatId, myId, text)
+
 
                 Result.success(Unit)
             } catch (e: Exception) {
@@ -142,135 +174,109 @@ class ChatRepositoryImpl(
         }
     }
 
-    suspend fun sendMessage_old(chatId: String, text: String): Result<Unit> {
-        return withContext(Dispatchers.IO) {
-            try {
-                val myId = FirebaseAuth.getInstance().currentUser?.uid
-                    ?: return@withContext Result.failure(Exception("NO_SESSION"))
+    private suspend fun sendFcmViaHttp(chatId: String, senderId: String, text: String) {
+        try {
+            val uids = chatId.split("_")
+            val recipientId = uids.firstOrNull { it != senderId } ?: return
 
-                val uids = chatId.split("_")
-                val isSelfChat = uids.size >= 2 && uids[0] == uids[1] && uids[0] == myId
+            val tokenSnapshot = rtdb.child("users/$recipientId/fcmToken").get().await()
+            val token = tokenSnapshot.getValue(String::class.java) ?: return
+            val senderName = userRepository.getCachedContact(senderId)?.name ?: "Пользователь"
+            // Получаем OAuth токен через Service Account
+            val accessToken = getAccessToken()
 
-                val messageId = firestore.collection(Constants.FIRESTORE_CHATS)
-                    .document(chatId)
-                    .collection(Constants.FIRESTORE_MESSAGES)
-                    .document()
-                    .id
-
-                messageDao.insertMessage(
-                    LocalMessageEntity(
-                        id = messageId,
-                        chatId = chatId,
-                        senderId = myId,
-                        text = text,
-                        timestamp = System.currentTimeMillis(),
-                        isMine = true,
-                        isRead = true
-                    )
-                )
-                if (isSelfChat) {
-                    return@withContext Result.success(Unit)
-                }
-                sendMessageToFirestore(chatId, messageId, text)
-
-                Result.success(Unit)
-            } catch (e: Exception) {
-                android.util.Log.e("ChatRepository", "❌ sendMessage error", e)
-                Result.failure(e)
+            val jsonBody = JSONObject().apply {
+                put("message", JSONObject().apply {
+                    put("token", token)
+                    put("data", JSONObject().apply {
+                        put("type", "NEW_MESSAGE")
+                        put("chatId", chatId)
+                        put("senderId", senderId)
+                        put("text", text)
+                        put("senderName", senderName)
+                    })
+                    put("android", JSONObject().apply {
+                        put("priority", "high")
+                    })
+                })
             }
+
+            val client = OkHttpClient()
+            val requestBody = jsonBody.toString()
+                .toRequestBody("application/json".toMediaTypeOrNull())
+            val request = okhttp3.Request.Builder()
+                .url("https://fcm.googleapis.com/v1/projects/messendger-demo/messages:send")
+                .post(requestBody)
+                .addHeader("Authorization", "Bearer $accessToken")
+                .addHeader("Content-Type", "application/json")
+                .build()
+
+            val response = withContext(Dispatchers.IO) { client.newCall(request).execute() }
+            val responseBody = response.body?.string()
+            android.util.Log.d("ChatRepository", "✅ FCM ответ: ${response.code} $responseBody")
+
+        } catch (e: Exception) {
+            android.util.Log.e("ChatRepository", "❌ Ошибка FCM: ${e.message}")
         }
     }
 
-    private suspend fun sendMessageToFirestore(chatId: String, messageId: String, text: String) {
-        try {
-            val myId = FirebaseAuth.getInstance().currentUser?.uid ?: return
-            val peerPublicKey = userRepository.getCachedPeerPublicKey(chatId, myId) ?: return
-            val encryptedText = CryptoManager.encrypt(text, peerPublicKey)
+    private fun getAccessToken(): String {
+        val inputStream = context.assets.open("service_account.json")
+        val serviceAccountJson = inputStream.bufferedReader().use { it.readText() }
 
-            val msgDoc = MessageDocument(
-                id = messageId,
-                chatId = chatId,
-                senderId = myId,
-                encryptedText = encryptedText,
-                timestamp = System.currentTimeMillis()
-            )
+        val credentials = GoogleCredentials
+            .fromStream(ByteArrayInputStream(serviceAccountJson.toByteArray(StandardCharsets.UTF_8)))
+            .createScoped("https://www.googleapis.com/auth/firebase.messaging")
 
-            firestore.collection(Constants.FIRESTORE_CHATS)
-                .document(chatId)
-                .collection(Constants.FIRESTORE_MESSAGES)
-                .document(messageId)
-                .set(msgDoc)
-                .await()
-        } catch (e: Exception) {
-            android.util.Log.e("ChatRepository", "❌ sendMessageToFirestore error", e)
-        }
+        credentials.refreshIfExpired()
+        return credentials.accessToken.tokenValue
     }
 
     override fun startP2PDeliveryEngine(chatId: String): Flow<Unit> = callbackFlow {
-        if (activeListeners.contains(chatId)) {
-            close()
-            return@callbackFlow
-        }
-
+        android.util.Log.d("ChatRepository", "🔥 startP2PDeliveryEngine вызван для $chatId")
         val myId = FirebaseAuth.getInstance().currentUser?.uid
         if (myId == null) {
+            android.util.Log.e("ChatRepository", "❌ Нет UID")
             close()
             return@callbackFlow
         }
 
         val uids = chatId.split("_")
-        if (uids.size < 2 || (uids[0] == uids[1] && uids[0] == myId)) {
+        if (uids.size < 2 || (uids.firstOrNull() == myId && uids.lastOrNull() == myId)) {
+            android.util.Log.d("ChatRepository", "ℹ️ Пропускаем self-chat: $chatId")
             close()
             return@callbackFlow
         }
-
         activeListeners.add(chatId)
-
-        val rtdb = com.google.firebase.database.FirebaseDatabase.getInstance().reference
         val chatRef = rtdb.child("transit_messages").child(chatId)
+        android.util.Log.d("ChatRepository", "🔥 Начинаем обработку сообщений для $chatId")
+        try {
+            val existingMessages = chatRef.get().await()
+            android.util.Log.d("ChatRepository", "📨 Найдено ${existingMessages.childrenCount} существующих сообщений")
+            if (existingMessages.exists()) {
+                for (child in existingMessages.children) {
+                    android.util.Log.d("ChatRepository", "📨 Обрабатываем сообщение: ${child.key}")
+                    processRtdbMessage(child, chatId, myId)
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ChatRepository", "❌ Ошибка загрузки существующих сообщений", e)
+        }
 
-        val childListener = object : com.google.firebase.database.ChildEventListener {
-            override fun onChildAdded(snapshot: com.google.firebase.database.DataSnapshot, previousChildName: String?) {
-                val msgId = snapshot.child("id").value as? String ?: return
-                val senderId = snapshot.child("senderId").value as? String ?: return
-                val encryptedText = snapshot.child("encryptedText").value as? String ?: return
-
-                if (senderId == myId) return
-
-                launch(Dispatchers.IO) {
-                    try {
-                        val keyEntity = chatKeyDao.getKeyForChat(chatId) ?: return@launch
-                        val decryptedText = CryptoManager.decrypt(encryptedText, keyEntity.privateKey)
-
-                        val isUserReadingThisChatRightNow = (chatId == currentActiveChatId)
-
-                        messageDao.insertMessage(
-                            LocalMessageEntity(
-                                id = msgId,
-                                chatId = chatId,
-                                senderId = senderId,
-                                text = decryptedText,
-                                timestamp = System.currentTimeMillis(),
-                                isMine = false,
-                                isRead = isUserReadingThisChatRightNow
-                            )
-                        )
-
-                        snapshot.ref.removeValue()
-
-                        if (!isUserReadingThisChatRightNow) {
-                            showLocalNotification(chatId, senderId, decryptedText)
-                        }
-                    } catch (e: Exception) {
-                        android.util.Log.e("ChatRepository", "❌ Ошибка обработки СМС в RTDB", e)
-                    }
+        // 2. Подписываемся на новые
+        val childListener = object : ChildEventListener {
+            override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
+                CoroutineScope(Dispatchers.IO).launch {  // или CoroutineScope(Dispatchers.IO).launch
+                    processRtdbMessage(snapshot, chatId, myId)
                 }
             }
 
-            override fun onChildChanged(snapshot: com.google.firebase.database.DataSnapshot, previousChildName: String?) {}
-            override fun onChildRemoved(snapshot: com.google.firebase.database.DataSnapshot) {}
-            override fun onChildMoved(snapshot: com.google.firebase.database.DataSnapshot, previousChildName: String?) {}
-            override fun onCancelled(error: com.google.firebase.database.DatabaseError) {}
+            override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {}
+            override fun onChildRemoved(snapshot: DataSnapshot) {}
+            override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {}
+            override fun onCancelled(error: DatabaseError) {
+                android.util.Log.e("ChatRepository", "❌ RTDB listener cancelled: ${error.message}")
+            }
         }
 
         chatRef.addChildEventListener(childListener)
@@ -281,89 +287,57 @@ class ChatRepositoryImpl(
         }
     }
 
+    // Выносим логику обработки
+    private fun processRtdbMessage(
+        snapshot: DataSnapshot,
+        chatId: String,
+        myId: String
+    ) {
+        android.util.Log.e("ChatRepository", "🔥🔥🔥 processRtdbMessage ВЫЗВАН для $chatId")
+        val msgId = snapshot.child("id").value as? String ?: return
+        val senderId = snapshot.child("senderId").value as? String ?: return
+        val encryptedText = snapshot.child("encryptedText").value as? String ?: return
 
-    fun startP2PDeliveryEngine_old(chatId: String): Flow<Unit> = callbackFlow {
-        if (activeListeners.contains(chatId)) {
-            close()
-            return@callbackFlow
-        }
+        if (senderId == myId) return
 
-        val myId = FirebaseAuth.getInstance().currentUser?.uid
-        if (myId == null) {
-            close()
-            return@callbackFlow
-        }
-
-        val uids = chatId.split("_")
-        if (uids.size < 2 || (uids[0] == uids[1] && uids[0] == myId)) {
-            close()
-            return@callbackFlow
-        }
-
-        activeListeners.add(chatId)
-        val peerId = uids.firstOrNull { it != myId }
-        if (peerId == null) {
-            activeListeners.remove(chatId)
-            close()
-            return@callbackFlow
-        }
-        val listener = firestore.collection(Constants.FIRESTORE_CHATS)
-            .document(chatId)
-            .collection(Constants.FIRESTORE_MESSAGES)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null || snapshot == null) return@addSnapshotListener
-                if (snapshot.metadata.isFromCache) return@addSnapshotListener
-
-                snapshot.documentChanges.forEach { change ->
-                    if (change.type == DocumentChange.Type.ADDED) {
-                        launch(Dispatchers.IO) {
-                            processIncomingMessage(change.document, chatId, myId)
-                        }
-                    }
+        if (encryptedText == "SYSTEM_KEY_RESET") {
+            snapshot.ref.removeValue()
+            CoroutineScope(Dispatchers.IO).launch(kotlinx.coroutines.NonCancellable) {
+                try {
+                    userRepository.refreshChatsCache(myId)
+                    android.util.Log.d("ChatRepository", "⚡ Кэш обновлен по сигналу!")
+                } catch (e: Exception) {
+                    android.util.Log.e("ChatRepository", "❌ Ошибка обновления кэша", e)
                 }
             }
-
-        awaitClose {
-            activeListeners.remove(chatId)
-            listener.remove()
+            return
         }
-    }
 
-    private suspend fun processIncomingMessage(
-        doc: com.google.firebase.firestore.DocumentSnapshot,
-        chatId: String,
-        myId: String,
-    ) {
-        try {
-            val remoteMsg = doc.toObject(MessageDocument::class.java) ?: return
-            if (remoteMsg.senderId == myId) return
-
-            val keyEntity = chatKeyDao.getKeyForChat(chatId) ?: return
-            val decryptedText = CryptoManager.decrypt(remoteMsg.encryptedText, keyEntity.privateKey)
-            val isUserReadingThisChatRightNow = (chatId == currentActiveChatId)
-            android.util.Log.d("ChatRepository", "📱 Входящий chatId=$chatId | Активный в трекере=$currentActiveChatId | Итог проверки=$isUserReadingThisChatRightNow")
-            messageDao.insertMessage(
-                LocalMessageEntity(
-                    id = remoteMsg.id,
-                    chatId = chatId,
-                    senderId = remoteMsg.senderId,
-                    text = decryptedText,
-                    timestamp = System.currentTimeMillis(),
-                    isMine = false,
-                    isRead = isUserReadingThisChatRightNow
-                )
-            )
+        CoroutineScope(Dispatchers.IO).launch(kotlinx.coroutines.NonCancellable) {
             try {
-                doc.reference.delete().await()
-            } catch (e: Exception) {
-                android.util.Log.e("ChatRepository", "❌ Ошибка удаления документа", e)
-            }
+                val keyEntity = chatKeyDao.getKeyForChat(chatId) ?: return@launch
+                val decryptedText = CryptoManager.decrypt(encryptedText, keyEntity.privateKey)
 
-            if (!isUserReadingThisChatRightNow) {
-                showLocalNotification(chatId, remoteMsg.senderId, decryptedText)
+                val isUserReadingThisChatRightNow = (chatId == currentActiveChatId)
+                messageDao.insertMessage(
+                    LocalMessageEntity(
+                        id = msgId,
+                        chatId = chatId,
+                        senderId = senderId,
+                        text = decryptedText,
+                        timestamp = System.currentTimeMillis(),
+                        isMine = false,
+                        isRead = isUserReadingThisChatRightNow
+                    )
+                )
+                snapshot.ref.removeValue()
+
+//                if (!isUserReadingThisChatRightNow) {
+//                    showLocalNotification(chatId, senderId, decryptedText)
+//                }
+            } catch (e: Exception) {
+                android.util.Log.e("ChatRepository", "❌ Ошибка обработки сообщения RTDB", e)
             }
-        } catch (e: Exception) {
-            android.util.Log.e("ChatRepository", "❌ processIncomingMessage error", e)
         }
     }
 
@@ -373,7 +347,8 @@ class ChatRepositoryImpl(
             val cachedContact = userRepository.getCachedContact(senderId)
             val senderName = cachedContact?.name ?: "Новое сообщение"
             val intent = android.content.Intent(context, MainActivity::class.java).apply {
-                flags = android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+                flags =
+                    android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
                 putExtra("CHAT_ID", chatId)
             }
 
@@ -383,7 +358,8 @@ class ChatRepositoryImpl(
                 intent,
                 android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
             )
-            val defaultSoundUri = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION)
+            val defaultSoundUri =
+                android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION)
             val notificationBuilder = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_launcher_foreground)
                 .setContentTitle(senderName)
@@ -399,6 +375,73 @@ class ChatRepositoryImpl(
             notificationManager.notify(chatId.hashCode(), notificationBuilder.build())
         }
     }
+
+    override suspend fun regenerateKeysIfMissing(chatId: String): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val myId = FirebaseAuth.getInstance().currentUser?.uid
+                    ?: return@withContext Result.failure(Exception("NO_SESSION"))
+
+                // 1. Проверяем, есть ли локальный приватный ключ для этого чата в Room
+                val existingKey = chatKeyDao.getKeyForChat(chatId)
+                if (existingKey != null) {
+                    // Ключ на месте (всё в порядке), прерываем выполнение без трат квот
+                    return@withContext Result.success(Unit)
+                }
+
+                // 2. Ключа нет (телефон чистый после переустановки/логаута). Генерируем новую пару RSA
+                val keyPair = CryptoManager.generateKeyPair()
+                val privateKeyStr = CryptoManager.privateKeyToString(keyPair.private)
+                val publicKeyStr = CryptoManager.publicKeyToString(keyPair.public)
+
+                // 3. Сохраняем свежий приватный ключ в локальную базу Room
+                chatKeyDao.insertKey(
+                    com.example.mymessenger.data.local.entities.ChatKeyEntity(
+                        chatId = chatId,
+                        privateKey = privateKeyStr
+                    )
+                )
+
+                // 4. Определяем нашу роль в чате, чтобы обновить открытый ключ в Firestore
+                val chatDocRef = firestore.collection("chats").document(chatId)
+                val uids = chatId.split("_")
+
+                if (uids.size >= 2 && uids[0] != uids[1]) {
+                    val isUserA = uids.firstOrNull() == myId
+                    val fieldToUpdate = if (isUserA) "publicKeyUserA" else "publicKeyUserB"
+
+                    // Обновляем открытый ключ на сервере Firestore (это операция Записи/Write)
+                    chatDocRef.update(fieldToUpdate, publicKeyStr).await()
+                    android.util.Log.d(
+                        "ChatRepository",
+                        "🔄 Новые RSA ключи созданы и выгружены в Firestore ($fieldToUpdate)"
+                    )
+
+                    // 5. 🔥 БЕСПЛАТНЫЙ ХАНДШЕЙК: Отправляем невидимое системное СМС через Realtime Database.
+                    // Оно мгновенно и без затрат квот скажет телефону друга: «Я сбросил ключи, обнови кэш!»
+                    val systemMsgId = rtdb.child("transit_messages").child(chatId).push().key
+                    if (systemMsgId != null) {
+                        val systemMsgMap = mapOf(
+                            "id" to systemMsgId,
+                            "chatId" to chatId,
+                            "senderId" to myId,
+                            "encryptedText" to "SYSTEM_KEY_RESET", // Специальный текст-маркер
+                            "timestamp" to System.currentTimeMillis()
+                        )
+                        rtdb.child("transit_messages").child(chatId).child(systemMsgId)
+                            .setValue(systemMsgMap)
+                            .await()
+                    }
+                }
+
+                Result.success(Unit)
+            } catch (e: Exception) {
+                android.util.Log.e("ChatRepository", "❌ Ошибка регенерации ключей", e)
+                Result.failure(e)
+            }
+        }
+    }
+
 
     override suspend fun getMessagesSync(chatId: String): List<LocalMessageEntity> =
         withContext(Dispatchers.IO) { messageDao.getLastMessagesSync(chatId, 1000) }

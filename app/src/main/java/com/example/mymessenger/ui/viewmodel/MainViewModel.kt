@@ -3,12 +3,14 @@ package com.example.mymessenger.ui.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.mymessenger.R
+import com.example.mymessenger.data.local.AppDatabase
 import com.example.mymessenger.data.local.entities.ContactEntity
 import com.example.mymessenger.data.local.entities.LocalMessageEntity
 import com.example.mymessenger.domain.model.ChatDocument
 import com.example.mymessenger.domain.repository.ChatRepository
 import com.example.mymessenger.domain.repository.UserRepository
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.database.FirebaseDatabase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
@@ -29,7 +31,8 @@ sealed interface MainUiState {
 class MainViewModel(
     private val userRepository: UserRepository,
     private val firebaseAuth: FirebaseAuth,
-    private val chatRepository: ChatRepository
+    private val chatRepository: ChatRepository,
+    private val appDatabase: AppDatabase
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<MainUiState>(MainUiState.Loading)
@@ -52,27 +55,33 @@ class MainViewModel(
 
     private fun loadCurrentUserData() {
         val uid = firebaseAuth.currentUser?.uid
+        android.util.Log.d("MainViewModel", "🔥 1. loadCurrentUserData: uid=$uid")
         if (uid == null) {
             _uiState.value = MainUiState.Error(R.string.error_auth_unknown)
             return
         }
 
         viewModelScope.launch {
+            android.util.Log.d("MainViewModel", "🔥 2. Загружаем пользователя: $uid")
             userRepository.getCurrentUser(uid).fold(
                 onSuccess = { userData ->
+                    android.util.Log.d("MainViewModel", "✅ 3. Пользователь загружен: ${userData.name}")
                     nameCache[userData.uid] = userData.name
                     _uiState.value = MainUiState.Success(user = userData, chats = emptyList())
 
                     chatsObservationJob?.cancel()
 
                     chatsObservationJob = viewModelScope.launch {
+                        android.util.Log.d("MainViewModel", "🔥 4. Начинаем observeUserChatsWithCache")
                         userRepository.observeUserChatsWithCache(userData.uid)
                             .catch { exception ->
                                 android.util.Log.e("MainViewModel", "❌ Error observing chats", exception)
                                 _uiState.value = MainUiState.Error(R.string.error_network_failed)
                             }
                             .collect { chatsList ->
+                                android.util.Log.d("MainViewModel", "✅ 5. Получено ${chatsList.size} чатов")
                                 chatsList.forEach { chatDoc ->
+                                    android.util.Log.d("MainViewModel", "🔥 6. Обрабатываем чат: ${chatDoc.id}")
                                     viewModelScope.launch(Dispatchers.IO) {
                                         userRepository.completeCryptoHandshake(chatDoc)
                                     }
@@ -80,11 +89,13 @@ class MainViewModel(
                                 val currentChatIds = chatsList.map { it.id }.toSet()
                                 val obsoleteChatIds = activeEngineJobs.keys.filter { it !in currentChatIds }
                                 obsoleteChatIds.forEach { id ->
+                                    android.util.Log.d("MainViewModel", "🔥 7. Останавливаем engine для $id")
                                     activeEngineJobs[id]?.cancel()
                                     activeEngineJobs.remove(id)
                                 }
                                 chatsList.forEach { chatDoc ->
                                     if (!activeEngineJobs.containsKey(chatDoc.id)) {
+                                        android.util.Log.d("MainViewModel", "🔥 8. Запускаем engine для ${chatDoc.id}")
                                         activeEngineJobs[chatDoc.id] = viewModelScope.launch {
                                             chatRepository.startP2PDeliveryEngine(chatDoc.id)
                                                 .catch { e ->
@@ -137,8 +148,29 @@ class MainViewModel(
     }
 
     fun logout() {
-        firebaseAuth.signOut()
+        viewModelScope.launch {
+            try {
+                val uid = firebaseAuth.currentUser?.uid
+                if (uid != null) {
+                    val database = FirebaseDatabase.getInstance()
+                    database.getReference("users/$uid/status").setValue("offline")
+
+                    // Отправляем уведомление всем чатам
+                    userRepository.sendStatusUpdate(uid, "offline")
+                }
+
+                firebaseAuth.signOut()
+                withContext(Dispatchers.IO) {
+                    appDatabase.clearAllTables()
+                }
+                chatRepository.setActiveChatId(null)
+                nameCache.clear()
+            } catch (e: Exception) {
+                android.util.Log.e("MainViewModel", "❌ Ошибка при выходе из аккаунта", e)
+            }
+        }
     }
+
 
     fun startChatWithUser(inputName: String) {
         _searchError.value = null
